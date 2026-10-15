@@ -6,6 +6,8 @@ from sqlalchemy import create_engine, pool
 
 from app.database import Base, database_url
 
+from app import models
+
 config = context.config
 
 if config.config_file_name is not None:
