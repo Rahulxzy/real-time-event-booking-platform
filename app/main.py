@@ -4,10 +4,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db
+from app.dependencies import get_current_user, get_db
 from app.models import User
-from app.schemas import UserCreate, UserResponse
-from app.security import hash_password
+from app.schemas import UserCreate, UserLogin, UserResponse, TokenResponse
+from app.security import (
+    create_access_token,
+    hash_password,
+    verify_password,
+)
 
 app = FastAPI(title="Real-Time Event Booking Platform")
 
@@ -54,3 +58,45 @@ def register_user(
         )
 
     return user
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login_user(
+    credentials: UserLogin,
+    db: Session = Depends(get_db),
+):
+    user = db.scalar(
+        select(User).where(User.email == credentials.email)
+    )
+
+    if (
+        user is None
+        or not verify_password(
+            credentials.password,
+            user.hashed_password,
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(subject=str(user.id))
+
+    return TokenResponse(access_token=access_token)
+
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def read_current_user(
+    current_user: User = Depends(get_current_user),
+):
+    return current_user
