@@ -1,68 +1,5 @@
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
-from app.database import Base
-from app.dependencies import get_db
-from app.main import app
-
-
-@pytest.fixture
-def client():
-    test_engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-
-    TestingSessionLocal = sessionmaker(
-        bind=test_engine,
-        autoflush=False,
-        expire_on_commit=False,
-    )
-
-    Base.metadata.create_all(bind=test_engine)
-
-    def override_get_db():
-        db = TestingSessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_get_db
-
-    with TestClient(app) as test_client:
-        yield test_client
-
-    app.dependency_overrides.clear()
-    Base.metadata.drop_all(bind=test_engine)
-    test_engine.dispose()
-
-
-@pytest.fixture
-def auth_headers(client):
-    client.post(
-        "/auth/register",
-        json={
-            "email": "venueowner@example.com",
-            "password": "StrongPass123",
-        },
-    )
-
-    response = client.post(
-        "/auth/login",
-        json={
-            "email": "venueowner@example.com",
-            "password": "StrongPass123",
-        },
-    )
-
-    token = response.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
@@ -194,18 +131,7 @@ def test_update_venue(client, auth_headers, venue_payload):
     assert response.json()["name"] == "Grand Arena"
 
 
-def test_update_venue_without_token(client, venue_payload):
-    create_response = client.post(
-        "/auth/register",
-        json={
-            "email": "anotheruser@example.com",
-            "password": "StrongPass123",
-        },
-    )
-    assert create_response.status_code == 201
-
-    # Venue creation requires authentication, so test PATCH against
-    # a missing venue to verify auth is checked before endpoint logic.
+def test_update_venue_without_token(client):
     response = client.patch(
         "/venues/1",
         json={"city": "Mumbai"},
