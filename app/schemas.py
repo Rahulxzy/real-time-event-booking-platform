@@ -1,4 +1,3 @@
-
 from datetime import datetime
 from decimal import Decimal
 
@@ -114,8 +113,6 @@ class EventUpdate(BaseModel):
 
     @model_validator(mode="after")
     def validate_event_times(self):
-        # PATCH may contain only one of these fields.
-        # Validate the time relationship once both are provided.
         if (
             self.starts_at is not None
             and self.ends_at is not None
@@ -136,5 +133,28 @@ class EventResponse(BaseModel):
     capacity: int
     created_at: datetime
     updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SeatCreate(BaseModel):
+    row_label: str = Field(min_length=1, max_length=10)
+    seat_number: int = Field(gt=0)
+
+
+class SeatUpdate(BaseModel):
+    row_label: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=10,
+    )
+    seat_number: int | None = Field(default=None, gt=0)
+
+
+class SeatResponse(BaseModel):
+    id: int
+    venue_id: int
+    row_label: str
+    seat_number: int
 
     model_config = ConfigDict(from_attributes=True)

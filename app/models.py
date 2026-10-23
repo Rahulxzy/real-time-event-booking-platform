@@ -9,6 +9,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -130,5 +131,45 @@ class Event(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class Seat(Base):
+    __tablename__ = "seats"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "venue_id",
+            "row_label",
+            "seat_number",
+            name="uq_seats_venue_row_seat",
+        ),
+        CheckConstraint(
+            "seat_number > 0",
+            name="ck_seats_seat_number_positive",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    venue_id: Mapped[int] = mapped_column(
+        ForeignKey("venues.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    row_label: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+    )
+
+    seat_number: Mapped[int] = mapped_column(
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
         nullable=False,
     )
