@@ -1,3 +1,4 @@
+
 from datetime import datetime
 from decimal import Decimal
 
@@ -6,6 +7,8 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
+    Index,
     Numeric,
     String,
     Text,
@@ -21,21 +24,25 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+
     email: Mapped[str] = mapped_column(
         String(255),
         unique=True,
         index=True,
         nullable=False,
     )
+
     hashed_password: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
     )
+
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,
         nullable=False,
     )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -52,10 +59,12 @@ class Venue(Base):
         String(150),
         nullable=False,
     )
+
     address: Mapped[str] = mapped_column(
         String(500),
         nullable=False,
     )
+
     city: Mapped[str] = mapped_column(
         String(100),
         nullable=False,
@@ -66,6 +75,7 @@ class Venue(Base):
         server_default=func.now(),
         nullable=False,
     )
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -86,6 +96,11 @@ class Event(Base):
             "price >= 0 AND capacity > 0",
             name="ck_events_price_capacity_valid",
         ),
+        UniqueConstraint(
+            "id",
+            "venue_id",
+            name="uq_events_id_venue_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -100,6 +115,7 @@ class Event(Base):
         String(200),
         nullable=False,
     )
+
     description: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
@@ -109,6 +125,7 @@ class Event(Base):
         DateTime(timezone=True),
         nullable=False,
     )
+
     ends_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -118,6 +135,7 @@ class Event(Base):
         Numeric(10, 2),
         nullable=False,
     )
+
     capacity: Mapped[int] = mapped_column(
         nullable=False,
     )
@@ -127,6 +145,7 @@ class Event(Base):
         server_default=func.now(),
         nullable=False,
     )
+
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -149,6 +168,11 @@ class Seat(Base):
             "seat_number > 0",
             name="ck_seats_seat_number_positive",
         ),
+        UniqueConstraint(
+            "id",
+            "venue_id",
+            name="uq_seats_id_venue_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -165,6 +189,66 @@ class Seat(Base):
     )
 
     seat_number: Mapped[int] = mapped_column(
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+class EventSeat(Base):
+    __tablename__ = "event_seats"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "event_id",
+            "seat_id",
+            name="uq_event_seats_event_seat",
+        ),
+        CheckConstraint(
+            "status IN ('available', 'reserved', 'booked')",
+            name="ck_event_seats_status_valid",
+        ),
+        Index(
+            "ix_event_seats_event_status",
+            "event_id",
+            "status",
+        ),
+        ForeignKeyConstraint(
+            ["event_id", "venue_id"],
+            ["events.id", "events.venue_id"],
+            name="fk_event_seats_event_venue",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["seat_id", "venue_id"],
+            ["seats.id", "seats.venue_id"],
+            name="fk_event_seats_seat_venue",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    event_id: Mapped[int] = mapped_column(
+        nullable=False,
+    )
+
+    seat_id: Mapped[int] = mapped_column(
+        nullable=False,
+    )
+
+    venue_id: Mapped[int] = mapped_column(
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="available",
+        server_default="available",
         nullable=False,
     )
 

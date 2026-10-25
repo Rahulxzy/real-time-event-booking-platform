@@ -158,3 +158,26 @@ class SeatResponse(BaseModel):
     seat_number: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+
+class EventSeatResponse(BaseModel):
+    id: int
+    event_id: int
+    seat_id: int
+    venue_id: int
+    status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EventSeatAvailabilityResponse(BaseModel):
+    id: int
+    event_id: int
+    seat_id: int
+    row_label: str
+    seat_number: int
+    status: str
+
+    model_config = ConfigDict(from_attributes=True)
