@@ -20,7 +20,13 @@ def initialize_event_inventory(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    event = db.get(Event, event_id)
+    # Lock the event to serialize inventory initialization
+    # and event venue changes.
+    event = db.scalar(
+        select(Event)
+        .where(Event.id == event_id)
+        .with_for_update()
+    )
 
     if event is None:
         raise HTTPException(
@@ -28,8 +34,12 @@ def initialize_event_inventory(
             detail="Event not found",
         )
 
+    # Lock physical seats while initializing their event inventory.
     seats = db.scalars(
-        select(Seat.id).where(Seat.venue_id == event.venue_id)
+        select(Seat)
+        .where(Seat.venue_id == event.venue_id)
+        .order_by(Seat.id)
+        .with_for_update()
     ).all()
 
     if not seats:
@@ -41,32 +51,35 @@ def initialize_event_inventory(
     created_count = 0
 
     try:
-        for seat_id in seats:
+        for seat in seats:
             existing = db.scalar(
                 select(EventSeat.id).where(
                     EventSeat.event_id == event.id,
-                    EventSeat.seat_id == seat_id,
+                    EventSeat.seat_id == seat.id,
                 )
             )
 
             if existing is not None:
                 continue
 
-            db.add(
-                EventSeat(
-                    event_id=event.id,
-                    seat_id=seat_id,
-                    venue_id=event.venue_id,
-                    status="available",
-                )
-            )
-
             try:
+                # Keep the insert inside the savepoint so an integrity
+                # error does not invalidate the outer transaction.
                 with db.begin_nested():
+                    db.add(
+                        EventSeat(
+                            event_id=event.id,
+                            seat_id=seat.id,
+                            venue_id=event.venue_id,
+                            status="available",
+                        )
+                    )
                     db.flush()
+
                 created_count += 1
+
             except IntegrityError:
-                # A concurrent request may have inserted this seat already.
+                # The unique constraint protects against duplicate rows.
                 continue
 
         db.commit()
@@ -77,7 +90,9 @@ def initialize_event_inventory(
 
     total_count = len(
         db.scalars(
-            select(EventSeat.id).where(EventSeat.event_id == event.id)
+            select(EventSeat.id).where(
+                EventSeat.event_id == event.id
+            )
         ).all()
     )
 

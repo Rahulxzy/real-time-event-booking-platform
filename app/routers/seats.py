@@ -1,10 +1,11 @@
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_db, get_current_user
-from app.models import Seat, Venue, User
+from app.models import EventSeat, Seat, Venue, User
 from app.schemas import SeatCreate, SeatResponse, SeatUpdate
 
 router = APIRouter(prefix="/venues/{venue_id}/seats", tags=["Seats"])
@@ -22,6 +23,7 @@ def create_seat(
     current_user: User = Depends(get_current_user),
 ):
     venue = db.get(Venue, venue_id)
+
     if venue is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -53,6 +55,7 @@ def list_venue_seats(
     db: Session = Depends(get_db),
 ):
     venue = db.get(Venue, venue_id)
+
     if venue is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -64,6 +67,7 @@ def list_venue_seats(
         .where(Seat.venue_id == venue_id)
         .order_by(Seat.row_label, Seat.seat_number)
     )
+
     return db.scalars(statement).all()
 
 
@@ -111,17 +115,32 @@ def update_seat(
             detail="Seat fields cannot be null",
         )
 
+    # Lock the physical seat while checking and updating it.
     seat = db.scalar(
-        select(Seat).where(
+        select(Seat)
+        .where(
             Seat.id == seat_id,
             Seat.venue_id == venue_id,
         )
+        .with_for_update()
     )
 
     if seat is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Seat not found",
+        )
+
+    inventory_exists = db.scalar(
+        select(EventSeat.id)
+        .where(EventSeat.seat_id == seat_id)
+        .limit(1)
+    )
+
+    if inventory_exists is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot update a physical seat after it has been added to event inventory",
         )
 
     for field, value in updates.items():
@@ -154,10 +173,12 @@ def delete_seat(
     current_user: User = Depends(get_current_user),
 ):
     seat = db.scalar(
-        select(Seat).where(
+        select(Seat)
+        .where(
             Seat.id == seat_id,
             Seat.venue_id == venue_id,
         )
+        .with_for_update()
     )
 
     if seat is None:
@@ -166,9 +187,27 @@ def delete_seat(
             detail="Seat not found",
         )
 
+    inventory_exists = db.scalar(
+        select(EventSeat.id)
+        .where(EventSeat.seat_id == seat_id)
+        .limit(1)
+    )
+
+    if inventory_exists is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete a seat that belongs to event inventory",
+        )
+
     try:
         db.delete(seat)
         db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete a seat that is referenced by event inventory",
+        ) from exc
     except SQLAlchemyError:
         db.rollback()
         raise

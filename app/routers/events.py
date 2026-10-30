@@ -1,10 +1,11 @@
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.dependencies import get_current_user, get_db
-from app.models import Event, User, Venue
+from app.models import Event, EventSeat, User, Venue
 from app.schemas import EventCreate, EventResponse, EventUpdate
 
 router = APIRouter(prefix="/events", tags=["Events"])
@@ -78,6 +79,7 @@ def list_events(
         statement = statement.where(Event.venue_id == venue_id)
 
     statement = statement.order_by(Event.id).offset(skip).limit(limit)
+
     return db.scalars(statement).all()
 
 
@@ -112,8 +114,6 @@ def update_event(
             detail="At least one field must be provided",
         )
 
-    # Description is optional and can be cleared using null.
-    # All other supplied fields must have non-null values.
     nullable_fields = {"description"}
 
     if any(
@@ -125,7 +125,12 @@ def update_event(
             detail="Required event fields cannot be null",
         )
 
-    event = db.get(Event, event_id)
+    # Lock the event while checking and applying updates.
+    event = db.scalar(
+        select(Event)
+        .where(Event.id == event_id)
+        .with_for_update()
+    )
 
     if event is None:
         raise HTTPException(
@@ -133,7 +138,6 @@ def update_event(
             detail="Event not found",
         )
 
-    # Validate the final time range, including unchanged DB values.
     starts_at = updates.get("starts_at", event.starts_at)
     ends_at = updates.get("ends_at", event.ends_at)
 
@@ -143,7 +147,6 @@ def update_event(
             detail="ends_at must be after starts_at",
         )
 
-    # If venue_id changes, ensure the target venue exists.
     if "venue_id" in updates:
         venue = db.get(Venue, updates["venue_id"])
 
@@ -152,6 +155,19 @@ def update_event(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Venue not found",
             )
+
+        if updates["venue_id"] != event.venue_id:
+            inventory_exists = db.scalar(
+                select(EventSeat.id)
+                .where(EventSeat.event_id == event_id)
+                .limit(1)
+            )
+
+            if inventory_exists is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot change the venue after event inventory has been initialized",
+                )
 
     for field, value in updates.items():
         setattr(event, field, value)
@@ -181,7 +197,11 @@ def delete_event(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    event = db.get(Event, event_id)
+    event = db.scalar(
+        select(Event)
+        .where(Event.id == event_id)
+        .with_for_update()
+    )
 
     if event is None:
         raise HTTPException(
@@ -189,9 +209,27 @@ def delete_event(
             detail="Event not found",
         )
 
+    inventory_exists = db.scalar(
+        select(EventSeat.id)
+        .where(EventSeat.event_id == event_id)
+        .limit(1)
+    )
+
+    if inventory_exists is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete an event that has initialized seat inventory",
+        )
+
     try:
         db.delete(event)
         db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete an event that is referenced by other records",
+        ) from exc
     except SQLAlchemyError:
         db.rollback()
         raise

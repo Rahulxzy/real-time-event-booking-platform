@@ -235,3 +235,84 @@ def test_initialize_inventory_requires_authentication(client):
     response = client.post("/events/1/inventory")
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
     
+
+
+def test_update_seat_after_inventory_returns_409(client, auth_headers):
+    venue = create_venue(client, auth_headers)
+    event = create_event(client, auth_headers, venue["id"])
+    seat = create_seat(client, auth_headers, venue["id"], 1)
+
+    inventory_response = initialize_inventory(
+        client, auth_headers, event["id"]
+    )
+    assert inventory_response.status_code == status.HTTP_201_CREATED
+
+    response = client.patch(
+        f"/venues/{venue['id']}/seats/{seat['id']}",
+        json={"seat_number": 5},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert "event inventory" in response.json()["detail"]
+
+
+def test_delete_seat_after_inventory_returns_409(client, auth_headers):
+    venue = create_venue(client, auth_headers)
+    event = create_event(client, auth_headers, venue["id"])
+    seat = create_seat(client, auth_headers, venue["id"], 1)
+
+    inventory_response = initialize_inventory(
+        client, auth_headers, event["id"]
+    )
+    assert inventory_response.status_code == status.HTTP_201_CREATED
+
+    response = client.delete(
+        f"/venues/{venue['id']}/seats/{seat['id']}",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+
+
+def test_change_event_venue_after_inventory_returns_409(
+    client, auth_headers
+):
+    venue = create_venue(client, auth_headers)
+    another_venue = create_venue(client, auth_headers)
+    event = create_event(client, auth_headers, venue["id"])
+
+    create_seat(client, auth_headers, venue["id"], 1)
+
+    inventory_response = initialize_inventory(
+        client, auth_headers, event["id"]
+    )
+    assert inventory_response.status_code == status.HTTP_201_CREATED
+
+    response = client.patch(
+        f"/events/{event['id']}",
+        json={"venue_id": another_venue["id"]},
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
+    assert "venue" in response.json()["detail"].lower()
+
+
+def test_delete_event_after_inventory_returns_409(client, auth_headers):
+    venue = create_venue(client, auth_headers)
+    event = create_event(client, auth_headers, venue["id"])
+
+    create_seat(client, auth_headers, venue["id"], 1)
+
+    inventory_response = initialize_inventory(
+        client, auth_headers, event["id"]
+    )
+    assert inventory_response.status_code == status.HTTP_201_CREATED
+
+    response = client.delete(
+        f"/events/{event['id']}",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == status.HTTP_409_CONFLICT
