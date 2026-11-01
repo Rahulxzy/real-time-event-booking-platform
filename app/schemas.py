@@ -10,6 +10,8 @@ from pydantic import (
     model_validator,
 )
 
+from pydantic import field_validator
+
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -181,3 +183,44 @@ class EventSeatAvailabilityResponse(BaseModel):
     status: str
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReservationCreate(BaseModel):
+    event_id: int = Field(gt=0)
+    event_seat_ids: list[int] = Field(min_length=1, max_length=10)
+
+    @field_validator("event_seat_ids")
+    @classmethod
+    def validate_unique_seats(cls, value: list[int]) -> list[int]:
+        if any(seat_id <= 0 for seat_id in value):
+            raise ValueError("Seat IDs must be positive")
+
+        if len(value) != len(set(value)):
+            raise ValueError("Duplicate seat IDs are not allowed")
+
+        return value
+
+
+class ReservationSeatResponse(BaseModel):
+    event_seat_id: int
+    row_label: str
+    seat_number: int
+    price: Decimal
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReservationResponse(BaseModel):
+    id: int
+    event_id: int
+    user_id: int
+    status: str
+    expires_at: datetime
+    created_at: datetime
+    confirmed_at: datetime | None
+    seats: list[ReservationSeatResponse]
+    total_amount: Decimal
+
+
+class ReservationCreatedResponse(ReservationResponse):
+    message: str

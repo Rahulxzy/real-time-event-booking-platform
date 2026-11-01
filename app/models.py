@@ -19,6 +19,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 
+from sqlalchemy import CheckConstraint
+
 
 class User(Base):
     __tablename__ = "users"
@@ -229,6 +231,11 @@ class EventSeat(Base):
             name="fk_event_seats_seat_venue",
             ondelete="RESTRICT",
         ),
+        UniqueConstraint(
+            "id",
+            "event_id",
+            name="uq_event_seats_id_event_id",
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -249,6 +256,122 @@ class EventSeat(Base):
         String(20),
         default="available",
         server_default="available",
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+
+class Reservation(Base):
+    __tablename__ = "reservations"
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'confirmed', 'expired', 'cancelled')",
+            name="ck_reservations_status_valid",
+        ),
+        UniqueConstraint(
+            "id",
+            "event_id",
+            name="uq_reservations_id_event_id",
+        ),
+        Index(
+            "ix_reservations_user_created",
+            "user_id",
+            "created_at",
+        ),
+        Index(
+            "ix_reservations_event_status_expiry",
+            "event_id",
+            "status",
+            "expires_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("events.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="pending",
+        server_default="pending",
+        nullable=False,
+    )
+
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class ReservationSeat(Base):
+    __tablename__ = "reservation_seats"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "reservation_id",
+            "event_seat_id",
+            name="uq_reservation_seats_reservation_event_seat",
+        ),
+        ForeignKeyConstraint(
+            ["reservation_id", "event_id"],
+            ["reservations.id", "reservations.event_id"],
+            name="fk_reservation_seats_reservation_event",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["event_seat_id", "event_id"],
+            ["event_seats.id", "event_seats.event_id"],
+            name="fk_reservation_seats_event_seat",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_reservation_seats_reservation",
+            "reservation_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    reservation_id: Mapped[int] = mapped_column(
+        nullable=False,
+    )
+
+    event_seat_id: Mapped[int] = mapped_column(
+        nullable=False,
+    )
+
+    event_id: Mapped[int] = mapped_column(
+        nullable=False,
+    )
+
+    price: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
         nullable=False,
     )
 
