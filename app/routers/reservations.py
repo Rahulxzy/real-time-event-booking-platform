@@ -7,7 +7,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.dependencies import get_db, get_current_user
+from app.dependencies import get_current_user, get_db
 from app.models import (
     Event,
     EventSeat,
@@ -349,101 +349,6 @@ def get_reservation(
             reservation_id,
             current_user.id,
         )
-
-        return build_reservation_response(db, reservation)
-
-    except HTTPException:
-        db.rollback()
-        raise
-
-    except SQLAlchemyError:
-        db.rollback()
-        raise
-
-
-@router.post(
-    "/{reservation_id}/confirm",
-    response_model=ReservationResponse,
-)
-def confirm_reservation(
-    reservation_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    try:
-        reservation = get_owned_reservation(
-            db,
-            reservation_id,
-            current_user.id,
-        )
-
-        event = db.scalar(
-            select(Event)
-            .where(Event.id == reservation.event_id)
-            .with_for_update()
-        )
-
-        if event is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Event not found",
-            )
-
-        reservation = db.scalar(
-            select(Reservation)
-            .where(
-                Reservation.id == reservation_id,
-                Reservation.user_id == current_user.id,
-            )
-            .with_for_update()
-        )
-
-        if reservation.status != "pending":
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Cannot confirm a {reservation.status} reservation",
-            )
-
-        expire_due_reservations(db, event.id)
-
-        if reservation.status != "pending":
-            db.commit()
-
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Reservation has expired",
-            )
-
-        event_seats = db.scalars(
-            select(EventSeat)
-            .join(
-                ReservationSeat,
-                ReservationSeat.event_seat_id == EventSeat.id,
-            )
-            .where(
-                ReservationSeat.reservation_id == reservation.id,
-            )
-            .order_by(EventSeat.id)
-            .with_for_update()
-        ).all()
-
-        if not event_seats or any(
-            seat.status != "reserved"
-            for seat in event_seats
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Reservation seats are no longer reserved",
-            )
-
-        for seat in event_seats:
-            seat.status = "booked"
-
-        reservation.status = "confirmed"
-        reservation.confirmed_at = get_database_now(db)
-
-        db.commit()
-        db.refresh(reservation)
 
         return build_reservation_response(db, reservation)
 

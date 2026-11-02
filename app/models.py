@@ -3,12 +3,14 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    JSON,
     Numeric,
     String,
     Text,
@@ -19,7 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 
-from sqlalchemy import CheckConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 
 
 class User(Base):
@@ -328,6 +330,11 @@ class Reservation(Base):
         nullable=True,
     )
 
+    checkout_deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
 
 class ReservationSeat(Base):
     __tablename__ = "reservation_seats"
@@ -379,4 +386,188 @@ class ReservationSeat(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+    )
+
+
+
+class Payment(Base):
+    __tablename__ = "payments"
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount_paise > 0",
+            name="ck_payments_amount_positive",
+        ),
+        CheckConstraint(
+            """
+            status IN (
+                'creating',
+                'created',
+                'authorized',
+                'captured',
+                'failed',
+                'refunded',
+                'partially_refunded'
+            )
+            """,
+            name="ck_payments_status_valid",
+        ),
+        CheckConstraint(
+            "currency = 'INR'",
+            name="ck_payments_currency_inr",
+        ),
+        UniqueConstraint(
+            "reservation_id",
+            "idempotency_key",
+            name="uq_payments_reservation_idempotency",
+        ),
+        UniqueConstraint(
+            "provider_order_id",
+            name="uq_payments_provider_order",
+        ),
+        UniqueConstraint(
+            "provider_payment_id",
+            name="uq_payments_provider_payment",
+        ),
+        Index(
+            "ix_payments_reservation_created",
+            "reservation_id",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("reservations.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    provider: Mapped[str] = mapped_column(
+        String(30),
+        default="razorpay",
+        server_default="razorpay",
+        nullable=False,
+    )
+
+    provider_order_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    provider_payment_id: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    amount_paise: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    currency: Mapped[str] = mapped_column(
+        String(3),
+        default="INR",
+        server_default="INR",
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(30),
+        default="creating",
+        server_default="creating",
+        nullable=False,
+    )
+
+    idempotency_key: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    failure_code: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
+    failure_description: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    captured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
+class PaymentWebhookEvent(Base):
+    __tablename__ = "payment_webhook_events"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider_event_id",
+            name="uq_payment_webhook_provider_event",
+        ),
+        CheckConstraint(
+            "status IN ('received', 'processed', 'failed')",
+            name="ck_payment_webhook_status_valid",
+        ),
+        Index(
+            "ix_payment_webhook_status_received",
+            "status",
+            "received_at",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    provider_event_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    event_type: Mapped[str] = mapped_column(
+        String(100),
+        nullable=False,
+    )
+
+    payload: Mapped[dict] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(20),
+        default="received",
+        server_default="received",
+        nullable=False,
+    )
+
+    error_message: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )

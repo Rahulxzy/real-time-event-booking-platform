@@ -1,5 +1,6 @@
 
 import pytest
+
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, URL
 from sqlalchemy.orm import sessionmaker
@@ -34,12 +35,14 @@ def client():
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    app.state.testing_session_local = TestingSessionLocal
 
     try:
         with TestClient(app) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.clear()
+        app.state.testing_session_local = None
         Base.metadata.drop_all(bind=test_engine)
         test_engine.dispose()
 

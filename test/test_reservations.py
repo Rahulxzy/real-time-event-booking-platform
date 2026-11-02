@@ -1,11 +1,11 @@
+
 import psycopg
-
-from app.database import settings
-
-from app.routers import reservations as reservations_router
 
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+
+from app.database import settings
+from app.routers import reservations as reservations_router
 
 
 def setup_inventory(client, auth_headers, seat_count=2):
@@ -154,7 +154,10 @@ def test_cannot_reserve_already_reserved_seat(client, auth_headers):
     assert second_response.status_code == 409
 
 
-def test_confirm_reservation(client, auth_headers):
+def test_direct_confirmation_endpoint_is_disabled(
+    client,
+    auth_headers,
+):
     event_id, seats = setup_inventory(client, auth_headers)
 
     reservation_response = reserve_seats(
@@ -163,6 +166,8 @@ def test_confirm_reservation(client, auth_headers):
         event_id,
         [seats[0]["id"]],
     )
+    assert reservation_response.status_code == 201
+
     reservation_id = reservation_response.json()["id"]
 
     response = client.post(
@@ -170,15 +175,24 @@ def test_confirm_reservation(client, auth_headers):
         headers=auth_headers,
     )
 
-    assert response.status_code == 200
-    assert response.json()["status"] == "confirmed"
-    assert response.json()["confirmed_at"] is not None
+    # The public confirmation endpoint has been removed.
+    assert response.status_code == 404
 
+    # Reservation must remain pending.
+    reservation_details = client.get(
+        f"/reservations/{reservation_id}",
+        headers=auth_headers,
+    )
+
+    assert reservation_details.status_code == 200
+    assert reservation_details.json()["status"] == "pending"
+
+    # Its seat must remain reserved, not booked.
     updated_seats = client.get(
         f"/events/{event_id}/seats"
     ).json()
 
-    assert updated_seats[0]["status"] == "booked"
+    assert updated_seats[0]["status"] == "reserved"
 
 
 def test_cancel_reservation_releases_seat(client, auth_headers):
@@ -205,31 +219,6 @@ def test_cancel_reservation_releases_seat(client, auth_headers):
     ).json()
 
     assert updated_seats[0]["status"] == "available"
-
-
-def test_cannot_confirm_cancelled_reservation(client, auth_headers):
-    event_id, seats = setup_inventory(client, auth_headers)
-
-    reservation_response = reserve_seats(
-        client,
-        auth_headers,
-        event_id,
-        [seats[0]["id"]],
-    )
-    reservation_id = reservation_response.json()["id"]
-
-    cancel_response = client.post(
-        f"/reservations/{reservation_id}/cancel",
-        headers=auth_headers,
-    )
-    assert cancel_response.status_code == 200
-
-    confirm_response = client.post(
-        f"/reservations/{reservation_id}/confirm",
-        headers=auth_headers,
-    )
-
-    assert confirm_response.status_code == 409
 
 
 def test_user_cannot_access_another_users_reservation(
@@ -317,7 +306,7 @@ def test_expired_reservation_releases_seats(
         5,
     )
 
-    # Creating another reservation triggers lazy expiry.
+    # Creating another reservation triggers lazy expiry
     # for overdue reservations belonging to this event.
     second_response = reserve_seats(
         client,
@@ -402,7 +391,7 @@ def test_concurrent_reservations_for_same_seat(
     assert len(updated_seats) == 1
     assert updated_seats[0]["status"] == "reserved"
 
-        # Verify exactly one reservation-seat record exists in PostgreSQL.
+    # Verify exactly one reservation-seat record exists in PostgreSQL.
     with psycopg.connect(
         host=settings.database_host,
         port=settings.database_port,
