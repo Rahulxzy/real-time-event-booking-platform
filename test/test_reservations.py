@@ -2,9 +2,13 @@
 import psycopg
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from threading import Barrier
 
+from sqlalchemy import func, select
+
 from app.database import settings
+from app.models import Reservation
 from app.routers import reservations as reservations_router
 
 
@@ -412,3 +416,172 @@ def test_concurrent_reservations_for_same_seat(
             reservation_count = cursor.fetchone()[0]
 
     assert reservation_count == 1
+
+
+def set_reservation_deadlines(
+    client,
+    reservation_id,
+    expires_in_minutes,
+    checkout_in_minutes=None,
+):
+    """Set test deadlines relative to the database clock."""
+    testing_session_local = client.app.state.testing_session_local
+    db = testing_session_local()
+
+    try:
+        now = db.scalar(select(func.now()))
+        reservation = db.get(Reservation, reservation_id)
+
+        assert reservation is not None
+
+        reservation.expires_at = now + timedelta(
+            minutes=expires_in_minutes
+        )
+
+        if checkout_in_minutes is not None:
+            reservation.checkout_deadline_at = now + timedelta(
+                minutes=checkout_in_minutes
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_checkout_deadline_prevents_premature_expiry(
+    client,
+    auth_headers,
+):
+    event_id, seats = setup_inventory(client, auth_headers)
+
+    first_response = reserve_seats(
+        client,
+        auth_headers,
+        event_id,
+        [seats[0]["id"]],
+    )
+    assert first_response.status_code == 201
+    first_reservation_id = first_response.json()["id"]
+
+    # The original hold has elapsed, but checkout is still active.
+    set_reservation_deadlines(
+        client,
+        first_reservation_id,
+        expires_in_minutes=-1,
+        checkout_in_minutes=5,
+    )
+
+    second_response = reserve_seats(
+        client,
+        auth_headers,
+        event_id,
+        [seats[1]["id"]],
+    )
+    assert second_response.status_code == 201
+
+    first_details = client.get(
+        f"/reservations/{first_reservation_id}",
+        headers=auth_headers,
+    )
+
+    assert first_details.status_code == 200
+    assert first_details.json()["status"] == "pending"
+
+    updated_seats = client.get(
+        f"/events/{event_id}/seats"
+    ).json()
+
+    assert updated_seats[0]["status"] == "reserved"
+    assert updated_seats[1]["status"] == "reserved"
+
+
+def test_expired_checkout_deadline_releases_seats(
+    client,
+    auth_headers,
+):
+    event_id, seats = setup_inventory(client, auth_headers)
+
+    first_response = reserve_seats(
+        client,
+        auth_headers,
+        event_id,
+        [seats[0]["id"]],
+    )
+    assert first_response.status_code == 201
+    first_reservation_id = first_response.json()["id"]
+
+    # The original hold is still active, but checkout has expired.
+    set_reservation_deadlines(
+        client,
+        first_reservation_id,
+        expires_in_minutes=5,
+        checkout_in_minutes=-1,
+    )
+
+    second_response = reserve_seats(
+        client,
+        auth_headers,
+        event_id,
+        [seats[1]["id"]],
+    )
+    assert second_response.status_code == 201
+
+    first_details = client.get(
+        f"/reservations/{first_reservation_id}",
+        headers=auth_headers,
+    )
+
+    assert first_details.status_code == 200
+    assert first_details.json()["status"] == "expired"
+
+    updated_seats = client.get(
+        f"/events/{event_id}/seats"
+    ).json()
+
+    assert updated_seats[0]["status"] == "available"
+    assert updated_seats[1]["status"] == "reserved"
+
+
+def test_user_reservation_expiry_uses_checkout_deadline(
+    client,
+    auth_headers,
+):
+    event_id, seats = setup_inventory(client, auth_headers)
+
+    reservation_response = reserve_seats(
+        client,
+        auth_headers,
+        event_id,
+        [seats[0]["id"]],
+    )
+    assert reservation_response.status_code == 201
+    reservation_id = reservation_response.json()["id"]
+
+    # /reservations/me must not expire a reservation whose
+    # checkout deadline is still in the future.
+    set_reservation_deadlines(
+        client,
+        reservation_id,
+        expires_in_minutes=-1,
+        checkout_in_minutes=5,
+    )
+
+    response = client.get(
+        "/reservations/me",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 200
+
+    reservation = next(
+        item
+        for item in response.json()
+        if item["id"] == reservation_id
+    )
+    assert reservation["status"] == "pending"
+
+    updated_seats = client.get(
+        f"/events/{event_id}/seats"
+    ).json()
+
+    assert updated_seats[0]["status"] == "reserved"

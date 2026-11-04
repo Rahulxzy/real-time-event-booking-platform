@@ -52,7 +52,10 @@ def expire_due_reservations(
         .where(
             Reservation.event_id == event_id,
             Reservation.status == "pending",
-            Reservation.expires_at <= func.now(),
+            func.coalesce(
+                Reservation.checkout_deadline_at,
+                Reservation.expires_at,
+            ) <= func.now(),
         )
         .order_by(Reservation.id)
         .with_for_update()
@@ -168,7 +171,10 @@ def expire_user_reservations(
         .where(
             Reservation.user_id == user_id,
             Reservation.status == "pending",
-            Reservation.expires_at <= func.now(),
+            func.coalesce(
+                Reservation.checkout_deadline_at,
+                Reservation.expires_at,
+            ) <= func.now(),
         )
         .distinct()
         .order_by(Reservation.event_id)
