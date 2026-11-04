@@ -12,6 +12,7 @@ dependencies = [
     "psycopg[binary]>=3.3.6",
     "pydantic-settings>=2.15.0",
     "pyjwt>=2.15.1",
+    "razorpay>=2.0.1",
     "sqlalchemy>=2.0.54",
 ]
 

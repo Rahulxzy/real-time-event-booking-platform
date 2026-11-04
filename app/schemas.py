@@ -1,3 +1,4 @@
+
 from datetime import datetime
 from decimal import Decimal
 
@@ -9,8 +10,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-
-from pydantic import field_validator
 
 
 class UserCreate(BaseModel):
@@ -66,11 +65,7 @@ class EventCreate(BaseModel):
     description: str | None = None
     starts_at: datetime
     ends_at: datetime
-    price: Decimal = Field(
-        ge=0,
-        max_digits=10,
-        decimal_places=2,
-    )
+    price: Decimal = Field(ge=0, max_digits=10, decimal_places=2)
     capacity: int = Field(gt=0)
 
     @field_validator("starts_at", "ends_at")
@@ -145,11 +140,7 @@ class SeatCreate(BaseModel):
 
 
 class SeatUpdate(BaseModel):
-    row_label: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=10,
-    )
+    row_label: str | None = Field(default=None, min_length=1, max_length=10)
     seat_number: int | None = Field(default=None, gt=0)
 
 
@@ -160,7 +151,6 @@ class SeatResponse(BaseModel):
     seat_number: int
 
     model_config = ConfigDict(from_attributes=True)
-
 
 
 class EventSeatResponse(BaseModel):
@@ -194,10 +184,8 @@ class ReservationCreate(BaseModel):
     def validate_unique_seats(cls, value: list[int]) -> list[int]:
         if any(seat_id <= 0 for seat_id in value):
             raise ValueError("Seat IDs must be positive")
-
         if len(value) != len(set(value)):
             raise ValueError("Duplicate seat IDs are not allowed")
-
         return value
 
 
@@ -223,4 +211,36 @@ class ReservationResponse(BaseModel):
 
 
 class ReservationCreatedResponse(ReservationResponse):
+    message: str
+
+
+class PaymentOrderCreate(BaseModel):
+    reservation_id: int = Field(gt=0)
+
+
+class PaymentOrderResponse(BaseModel):
+    payment_id: int
+    reservation_id: int
+    order_id: str
+    amount: int
+    currency: str
+    key_id: str
+
+
+# Razorpay Checkout callback payload.
+class PaymentVerificationCreate(BaseModel):
+    razorpay_order_id: str = Field(min_length=1, max_length=100)
+    razorpay_payment_id: str = Field(min_length=1, max_length=100)
+    razorpay_signature: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-fA-F0-9]{64}$",
+    )
+
+
+class PaymentVerificationResponse(BaseModel):
+    payment_id: int
+    reservation_id: int
+    payment_status: str
+    reservation_status: str
     message: str
