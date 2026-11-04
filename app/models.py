@@ -17,11 +17,10 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
-
-from sqlalchemy.dialects.postgresql import JSONB
 
 
 class User(Base):
@@ -268,7 +267,6 @@ class EventSeat(Base):
     )
 
 
-
 class Reservation(Base):
     __tablename__ = "reservations"
 
@@ -281,6 +279,10 @@ class Reservation(Base):
             "id",
             "event_id",
             name="uq_reservations_id_event_id",
+        ),
+        UniqueConstraint(
+            "confirmed_payment_id",
+            name="uq_reservations_confirmed_payment",
         ),
         Index(
             "ix_reservations_user_created",
@@ -332,6 +334,16 @@ class Reservation(Base):
 
     checkout_deadline_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+    )
+
+    confirmed_payment_id: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "payments.id",
+            ondelete="RESTRICT",
+            name="fk_reservations_confirmed_payment",
+            use_alter=True,
+        ),
         nullable=True,
     )
 
@@ -387,7 +399,6 @@ class ReservationSeat(Base):
         server_default=func.now(),
         nullable=False,
     )
-
 
 
 class Payment(Base):
