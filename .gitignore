@@ -20,6 +20,10 @@ wheels/
 .coverage
 htmlcov/
 
+# Celery Beat scheduler state
+celerybeat-schedule
+celerybeat-schedule.*
+
 # IDE and OS files
 .vscode/
 .DS_Store

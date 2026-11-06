@@ -11,13 +11,17 @@ class Settings(BaseSettings):
     database_name: str
     database_user: str
     database_password: str
+
     jwt_secret_key: str
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
+
     razorpay_key_id: str | None = None
     razorpay_key_secret: str | None = None
     razorpay_webhook_secret: str | None = None
     razorpay_currency: str = "INR"
+
+    redis_url: str = "redis://localhost:6379/0"
 
     model_config = SettingsConfigDict(
         env_file=".env",

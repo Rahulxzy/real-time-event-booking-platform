@@ -3,7 +3,7 @@ from datetime import timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,10 @@ from app.schemas import (
     ReservationCreate,
     ReservationResponse,
     ReservationSeatResponse,
+)
+from app.services.reservation_expiry_service import (
+    expire_due_reservations,
+    expire_user_reservations,
 )
 
 router = APIRouter(
@@ -39,56 +43,6 @@ def get_database_now(db: Session):
         now = now.replace(tzinfo=timezone.utc)
 
     return now
-
-
-def expire_due_reservations(
-    db: Session,
-    event_id: int,
-) -> int:
-    """Expire overdue reservations and release their seats."""
-
-    expired_reservations = db.scalars(
-        select(Reservation)
-        .where(
-            Reservation.event_id == event_id,
-            Reservation.status == "pending",
-            func.coalesce(
-                Reservation.checkout_deadline_at,
-                Reservation.expires_at,
-            ) <= func.now(),
-        )
-        .order_by(Reservation.id)
-        .with_for_update()
-    ).all()
-
-    if not expired_reservations:
-        return 0
-
-    reservation_ids = [r.id for r in expired_reservations]
-
-    event_seat_ids = db.scalars(
-        select(ReservationSeat.event_seat_id)
-        .where(
-            ReservationSeat.reservation_id.in_(reservation_ids)
-        )
-        .order_by(ReservationSeat.event_seat_id)
-    ).all()
-
-    if event_seat_ids:
-        db.execute(
-            update(EventSeat)
-            .where(
-                EventSeat.id.in_(event_seat_ids),
-                EventSeat.event_id == event_id,
-                EventSeat.status == "reserved",
-            )
-            .values(status="available")
-        )
-
-    for reservation in expired_reservations:
-        reservation.status = "expired"
-
-    return len(expired_reservations)
 
 
 def build_reservation_response(
@@ -158,39 +112,6 @@ def get_owned_reservation(
         )
 
     return reservation
-
-
-def expire_user_reservations(
-    db: Session,
-    user_id: int,
-) -> None:
-    """Process overdue reservations belonging to a user."""
-
-    event_ids = db.scalars(
-        select(Reservation.event_id)
-        .where(
-            Reservation.user_id == user_id,
-            Reservation.status == "pending",
-            func.coalesce(
-                Reservation.checkout_deadline_at,
-                Reservation.expires_at,
-            ) <= func.now(),
-        )
-        .distinct()
-        .order_by(Reservation.event_id)
-    ).all()
-
-    for event_id in event_ids:
-        event = db.scalar(
-            select(Event)
-            .where(Event.id == event_id)
-            .with_for_update()
-        )
-
-        if event is not None:
-            expire_due_reservations(db, event_id)
-
-    db.commit()
 
 
 @router.post(
@@ -302,6 +223,7 @@ def list_my_reservations(
 ):
     try:
         expire_user_reservations(db, current_user.id)
+        db.commit()
 
         reservations = db.scalars(
             select(Reservation)
