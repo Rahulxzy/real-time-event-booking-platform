@@ -150,35 +150,32 @@ def test_celery_task_expires_reservation_and_releases_seat(
     )
 
 
-def test_celery_task_expires_reservation_in_postgresql(
-    postgres_client,
-    postgres_auth_headers,
+def test_celery_task_expires_reservation_in_testcontainers_postgresql(
+    testcontainers_postgres_client,
+    testcontainers_postgres_auth_headers,
+    testcontainers_postgres_session_local,
     monkeypatch,
 ):
     event_id, event_seat_id = setup_task_test_inventory(
-        postgres_client,
-        postgres_auth_headers,
+        testcontainers_postgres_client,
+        testcontainers_postgres_auth_headers,
     )
 
     reservation_id = make_reservation(
-        postgres_client,
-        postgres_auth_headers,
+        testcontainers_postgres_client,
+        testcontainers_postgres_auth_headers,
         event_id,
         event_seat_id,
-    )
-
-    testing_session_local = (
-        postgres_client.app.state.testing_session_local
     )
 
     monkeypatch.setattr(
         reservation_tasks,
         "SessionLocal",
-        testing_session_local,
+        testcontainers_postgres_session_local,
     )
 
     make_reservation_overdue(
-        testing_session_local,
+        testcontainers_postgres_session_local,
         reservation_id,
     )
 
@@ -187,7 +184,7 @@ def test_celery_task_expires_reservation_in_postgresql(
     assert expired_count == 1
 
     verify_expired_reservation(
-        testing_session_local,
+        testcontainers_postgres_session_local,
         reservation_id,
         event_seat_id,
     )

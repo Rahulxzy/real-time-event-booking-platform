@@ -1,12 +1,12 @@
-
 import pytest
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, URL
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+from testcontainers.community.postgres import PostgresContainer
 
-from app.database import Base, settings
+from app.database import Base
 from app.dependencies import get_db
 from app.main import app
 
@@ -71,41 +71,68 @@ def auth_headers(client):
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.fixture(scope="session")
+def testcontainers_postgres():
+    """
+    Start one disposable PostgreSQL container for this pytest session.
+    The container is automatically removed after the session.
+    """
+    with PostgresContainer(
+        "postgres:18-alpine",
+        driver="psycopg",
+    ) as postgres:
+        yield postgres
+
+
 @pytest.fixture
-def postgres_client():
-    test_url = URL.create(
-        drivername="postgresql+psycopg",
-        username=settings.database_user,
-        password=settings.database_password,
-        host=settings.database_host,
-        port=settings.database_port,
-        database="event_booking_test_db",
-    )
+def testcontainers_postgres_engine(testcontainers_postgres):
+    """
+    Create an isolated SQLAlchemy engine for the test container.
+    """
+    connection_url = testcontainers_postgres.get_connection_url()
 
     test_engine = create_engine(
-        test_url,
+        connection_url,
         pool_pre_ping=True,
     )
 
-    # Safety check: never run destructive cleanup on another database.
-    with test_engine.connect() as connection:
-        database_name = connection.exec_driver_sql(
-            "SELECT current_database()"
-        ).scalar_one()
+    try:
+        with test_engine.connect() as connection:
+            database_name = connection.exec_driver_sql(
+                "SELECT current_database()"
+            ).scalar_one()
 
-    if database_name != "event_booking_test_db":
+            assert database_name == "test"
+
+        yield test_engine
+
+    finally:
         test_engine.dispose()
-        raise RuntimeError(
-            f"Unsafe test database: {database_name}"
-        )
 
+
+@pytest.fixture
+def testcontainers_postgres_session_local(
+    testcontainers_postgres_engine,
+):
     TestingSessionLocal = sessionmaker(
-        bind=test_engine,
+        bind=testcontainers_postgres_engine,
         autoflush=False,
         expire_on_commit=False,
     )
 
-    Base.metadata.create_all(bind=test_engine)
+    Base.metadata.create_all(bind=testcontainers_postgres_engine)
+
+    try:
+        yield TestingSessionLocal
+    finally:
+        Base.metadata.drop_all(bind=testcontainers_postgres_engine)
+
+
+@pytest.fixture
+def testcontainers_postgres_client(
+    testcontainers_postgres_session_local,
+):
+    TestingSessionLocal = testcontainers_postgres_session_local
 
     def override_get_db():
         db = TestingSessionLocal()
@@ -123,25 +150,23 @@ def postgres_client():
     finally:
         app.dependency_overrides.clear()
         app.state.testing_session_local = None
-        Base.metadata.drop_all(bind=test_engine)
-        test_engine.dispose()
 
 
 @pytest.fixture
-def postgres_auth_headers(postgres_client):
-    response = postgres_client.post(
+def testcontainers_postgres_auth_headers(testcontainers_postgres_client):
+    response = testcontainers_postgres_client.post(
         "/auth/register",
         json={
-            "email": "postgres-test@example.com",
+            "email": "container-test@example.com",
             "password": "StrongPass123",
         },
     )
     assert response.status_code == 201
 
-    response = postgres_client.post(
+    response = testcontainers_postgres_client.post(
         "/auth/login",
         json={
-            "email": "postgres-test@example.com",
+            "email": "container-test@example.com",
             "password": "StrongPass123",
         },
     )

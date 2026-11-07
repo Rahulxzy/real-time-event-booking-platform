@@ -1,14 +1,10 @@
-
-import psycopg
-
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from threading import Barrier
 
 from sqlalchemy import func, select
 
-from app.database import settings
-from app.models import Reservation
+from app.models import Reservation, ReservationSeat
 from app.routers import reservations as reservations_router
 
 
@@ -147,12 +143,18 @@ def test_cannot_reserve_already_reserved_seat(client, auth_headers):
     seat_id = seats[0]["id"]
 
     first_response = reserve_seats(
-        client, auth_headers, event_id, [seat_id]
+        client,
+        auth_headers,
+        event_id,
+        [seat_id],
     )
     assert first_response.status_code == 201
 
     second_response = reserve_seats(
-        client, auth_headers, event_id, [seat_id]
+        client,
+        auth_headers,
+        event_id,
+        [seat_id],
     )
 
     assert second_response.status_code == 409
@@ -337,20 +339,23 @@ def test_expired_reservation_releases_seats(
 
 
 def test_concurrent_reservations_for_same_seat(
-    postgres_client,
-    postgres_auth_headers,
+    testcontainers_postgres_client,
+    testcontainers_postgres_auth_headers,
 ):
+    client = testcontainers_postgres_client
+    auth_headers = testcontainers_postgres_auth_headers
+
     # Arrange: create one event with exactly one available seat.
     event_id, seats = setup_inventory(
-        postgres_client,
-        postgres_auth_headers,
+        client,
+        auth_headers,
         seat_count=1,
     )
 
     event_seat_id = seats[0]["id"]
 
     # Create a second, independent user.
-    second_user_headers = create_second_user(postgres_client)
+    second_user_headers = create_second_user(client)
 
     # Synchronize both requests so they start together.
     barrier = Barrier(2)
@@ -359,7 +364,7 @@ def test_concurrent_reservations_for_same_seat(
         barrier.wait(timeout=10)
 
         return reserve_seats(
-            postgres_client,
+            client,
             headers,
             event_id,
             [event_seat_id],
@@ -369,7 +374,7 @@ def test_concurrent_reservations_for_same_seat(
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_one = executor.submit(
             make_reservation,
-            postgres_auth_headers,
+            auth_headers,
         )
         future_two = executor.submit(
             make_reservation,
@@ -388,34 +393,30 @@ def test_concurrent_reservations_for_same_seat(
     assert statuses == [201, 409]
 
     # Verify the seat has only been reserved, not double-booked.
-    updated_seats = postgres_client.get(
+    updated_seats = client.get(
         f"/events/{event_id}/seats"
     ).json()
 
     assert len(updated_seats) == 1
     assert updated_seats[0]["status"] == "reserved"
 
-    # Verify exactly one reservation-seat record exists in PostgreSQL.
-    with psycopg.connect(
-        host=settings.database_host,
-        port=settings.database_port,
-        dbname="event_booking_test_db",
-        user=settings.database_user,
-        password=settings.database_password,
-    ) as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT COUNT(*)
-                FROM reservation_seats
-                WHERE event_seat_id = %s
-                """,
-                (event_seat_id,),
+    # Verify exactly one reservation-seat record exists
+    # in the same disposable PostgreSQL database.
+    TestingSessionLocal = client.app.state.testing_session_local
+    db = TestingSessionLocal()
+
+    try:
+        reservation_count = db.scalar(
+            select(func.count())
+            .select_from(ReservationSeat)
+            .where(
+                ReservationSeat.event_seat_id == event_seat_id
             )
+        )
 
-            reservation_count = cursor.fetchone()[0]
-
-    assert reservation_count == 1
+        assert reservation_count == 1
+    finally:
+        db.close()
 
 
 def set_reservation_deadlines(
