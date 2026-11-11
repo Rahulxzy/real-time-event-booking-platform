@@ -1,9 +1,10 @@
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 
 const API_BASE = '/api'
 const TOKEN_KEY = 'event_booking_access_token'
+const MAX_SELECTABLE_SEATS = 10
 
 type User = {
   id: number
@@ -30,6 +31,22 @@ type Venue = {
   city: string
 }
 
+type EventSeat = {
+  id: number
+  event_id: number
+  seat_id: number
+  row_label: string
+  seat_number: number
+  status: 'available' | 'reserved' | 'booked' | string
+}
+
+type ReservationSeat = {
+  event_seat_id: number
+  row_label: string
+  seat_number: number
+  price: string
+}
+
 type Reservation = {
   id: number
   event_id: number
@@ -39,12 +56,7 @@ type Reservation = {
   created_at: string
   confirmed_at: string | null
   total_amount: string
-  seats: {
-    event_seat_id: number
-    row_label: string
-    seat_number: number
-    price: string
-  }[]
+  seats: ReservationSeat[]
 }
 
 type AuthResponse = {
@@ -112,6 +124,14 @@ function formatPrice(value: string | number) {
   }).format(Number(value))
 }
 
+function formatCountdown(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
 function App() {
   const [token, setToken] = useState<string | null>(
     () => sessionStorage.getItem(TOKEN_KEY),
@@ -125,8 +145,14 @@ function App() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null)
+  const [eventSeats, setEventSeats] = useState<EventSeat[]>([])
+  const [selectedSeatIds, setSelectedSeatIds] = useState<number[]>([])
+  const [activeReservation, setActiveReservation] = useState<Reservation | null>(null)
+  const [currentTime, setCurrentTime] = useState(0)
   const [loading, setLoading] = useState(true)
   const [authLoading, setAuthLoading] = useState(false)
+  const [seatsLoading, setSeatsLoading] = useState(false)
+  const [reservationLoading, setReservationLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -149,12 +175,31 @@ function App() {
     setReservations(data)
   }, [])
 
+  const loadEventSeats = useCallback(async (eventId: number) => {
+    setSeatsLoading(true)
+    setError('')
+
+    try {
+      const data = await api<EventSeat[]>(`/events/${eventId}/seats`)
+      setEventSeats(data)
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : 'Could not load event seats.',
+      )
+    } finally {
+      setSeatsLoading(false)
+    }
+  }, [])
+
   const logout = useCallback(() => {
     sessionStorage.removeItem(TOKEN_KEY)
     setToken(null)
     setUser(null)
     setReservations([])
     setSelectedEvent(null)
+    setEventSeats([])
+    setSelectedSeatIds([])
+    setActiveReservation(null)
     setView('events')
     setNotice('You have been signed out.')
     setError('')
@@ -201,6 +246,72 @@ function App() {
     }
   }, [token, loadPublicData, loadBookings, logout])
 
+  // Keep the reservation countdown synchronized with real time.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setCurrentTime(Date.now())
+    }, 1000)
+
+    return () => window.clearInterval(interval)
+  }, [])
+
+  const selectedSeats = useMemo(
+    () => eventSeats.filter((seat) => selectedSeatIds.includes(seat.id)),
+    [eventSeats, selectedSeatIds],
+  )
+
+  const totalAmount = selectedSeats.length * Number(selectedEvent?.price ?? 0)
+
+  const remainingHoldTime = activeReservation
+    ? new Date(activeReservation.expires_at).getTime() - currentTime
+    : 0
+
+  const activeHoldExpired =
+    Boolean(activeReservation) &&
+    activeReservation?.status === 'pending' &&
+    currentTime > 0 &&
+    remainingHoldTime <= 0
+
+  const activeHoldActive =
+    Boolean(activeReservation) &&
+    activeReservation?.status === 'pending' &&
+    !activeHoldExpired
+
+  const getVenue = (venueId: number) => {
+    return venues.find((venue) => venue.id === venueId)
+  }
+
+  async function openEvent(item: Event) {
+    setSelectedEvent(item)
+    setSelectedSeatIds([])
+    setEventSeats([])
+    setActiveReservation(null)
+    setError('')
+    setNotice('')
+    setView('events')
+
+    await loadEventSeats(item.id)
+  }
+
+  function toggleSeat(seat: EventSeat) {
+    if (seat.status !== 'available' || activeHoldActive) return
+
+    setError('')
+
+    setSelectedSeatIds((current) => {
+      if (current.includes(seat.id)) {
+        return current.filter((id) => id !== seat.id)
+      }
+
+      if (current.length >= MAX_SELECTABLE_SEATS) {
+        setError(`You can select a maximum of ${MAX_SELECTABLE_SEATS} seats.`)
+        return current
+      }
+
+      return [...current, seat.id]
+    })
+  }
+
   async function handleAuth(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
@@ -221,8 +332,9 @@ function App() {
       })
 
       sessionStorage.setItem(TOKEN_KEY, result.access_token)
-      setToken(result.access_token)
       setPassword('')
+      setToken(result.access_token)
+
       setNotice(
         authMode === 'register'
           ? 'Account created successfully.'
@@ -234,6 +346,67 @@ function App() {
       )
     } finally {
       setAuthLoading(false)
+    }
+  }
+
+  async function handleReservation() {
+    if (!token || !user) {
+      setError('Please sign in before reserving seats.')
+      setAuthMode('login')
+      document.getElementById('auth-panel')?.scrollIntoView({
+        behavior: 'smooth',
+      })
+      return
+    }
+
+    if (activeHoldActive) {
+      setError('You already have an active reservation hold.')
+      return
+    }
+
+    if (!selectedEvent || selectedSeatIds.length === 0) {
+      setError('Please select at least one available seat.')
+      return
+    }
+
+    setReservationLoading(true)
+    setError('')
+    setNotice('')
+
+    try {
+      const reservation = await api<Reservation>(
+        '/reservations',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            event_id: selectedEvent.id,
+            event_seat_ids: selectedSeatIds,
+          }),
+        },
+        token,
+      )
+
+      setActiveReservation(reservation)
+      setSelectedSeatIds([])
+      setNotice(
+        'Seats reserved successfully. Complete checkout before the hold expires.',
+      )
+
+      await Promise.all([
+        loadEventSeats(selectedEvent.id),
+        loadBookings(token),
+      ])
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not reserve the selected seats.',
+      )
+
+      // Another user may have reserved a seat after it was displayed.
+      await loadEventSeats(selectedEvent.id)
+    } finally {
+      setReservationLoading(false)
     }
   }
 
@@ -257,6 +430,15 @@ function App() {
       )
 
       await loadBookings(token)
+
+      if (selectedEvent) {
+        await loadEventSeats(selectedEvent.id)
+      }
+
+      if (activeReservation?.id === reservationId) {
+        setActiveReservation(null)
+      }
+
       setNotice('Reservation cancelled successfully.')
     } catch (err) {
       setError(
@@ -265,8 +447,79 @@ function App() {
     }
   }
 
-  function getVenue(venueId: number) {
-    return venues.find((venue) => venue.id === venueId)
+  async function refreshExpiredReservation() {
+    if (selectedEvent) {
+      await loadEventSeats(selectedEvent.id)
+    }
+
+    if (token) {
+      await loadBookings(token)
+    }
+
+    setNotice('Seat availability and bookings refreshed.')
+  }
+
+  function renderSeatMap() {
+    const rows = [...new Set(eventSeats.map((seat) => seat.row_label))]
+      .sort((a, b) => a.localeCompare(b))
+
+    return (
+      <div className="seat-map-wrapper">
+        <div className="screen-indicator">
+          <div className="screen-line" />
+          <span>STAGE / SCREEN</span>
+        </div>
+
+        <div className="seat-legend">
+          <span><i className="seat-dot available-dot" /> Available</span>
+          <span><i className="seat-dot selected-dot" /> Selected</span>
+          <span><i className="seat-dot unavailable-dot" /> Unavailable</span>
+        </div>
+
+        <div className="seat-map">
+          {rows.map((row) => {
+            const rowSeats = eventSeats
+              .filter((seat) => seat.row_label === row)
+              .sort((a, b) => a.seat_number - b.seat_number)
+
+            return (
+              <div className="seat-row" key={row}>
+                <span className="row-label">{row}</span>
+
+                <div className="seat-row-items">
+                  {rowSeats.map((seat) => {
+                    const isSelected = selectedSeatIds.includes(seat.id)
+                    const isUnavailable = seat.status !== 'available'
+
+                    const className = [
+                      'seat-button',
+                      isSelected ? 'seat-selected' : '',
+                      isUnavailable ? 'seat-unavailable' : '',
+                    ].filter(Boolean).join(' ')
+
+                    return (
+                      <button
+                        key={seat.id}
+                        type="button"
+                        className={className}
+                        disabled={isUnavailable || activeHoldActive}
+                        onClick={() => toggleSeat(seat)}
+                        aria-label={`Row ${seat.row_label}, seat ${seat.seat_number}, ${seat.status}`}
+                        title={`${seat.row_label}${seat.seat_number} — ${seat.status}`}
+                      >
+                        {seat.seat_number}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                <span className="row-label">{row}</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -278,6 +531,8 @@ function App() {
           onClick={() => {
             setView('events')
             setSelectedEvent(null)
+            setSelectedSeatIds([])
+            setActiveReservation(null)
           }}
         >
           <span className="brand-mark">E</span>
@@ -290,6 +545,9 @@ function App() {
             onClick={() => {
               setView('events')
               setSelectedEvent(null)
+              setSelectedSeatIds([])
+              setActiveReservation(null)
+              setError('')
             }}
           >
             Explore events
@@ -334,7 +592,7 @@ function App() {
       </header>
 
       <main>
-        <section className="hero-section">
+        <section className="hero-section" id="home">
           <div className="hero-content">
             <span className="eyebrow">YOUR NEXT EXPERIENCE STARTS HERE</span>
             <h1>Make plans.<br /><span>Make memories.</span></h1>
@@ -355,6 +613,7 @@ function App() {
               Explore events <span aria-hidden="true">→</span>
             </button>
           </div>
+
           <div className="hero-decoration" aria-hidden="true">
             <div className="hero-circle circle-one" />
             <div className="hero-circle circle-two" />
@@ -373,18 +632,14 @@ function App() {
             {error && (
               <div className="alert alert-error" role="alert">
                 {error}
-                <button onClick={() => setError('')} aria-label="Dismiss error">
-                  ×
-                </button>
+                <button onClick={() => setError('')} aria-label="Dismiss error">×</button>
               </div>
             )}
 
             {notice && (
               <div className="alert alert-success" role="status">
                 {notice}
-                <button onClick={() => setNotice('')} aria-label="Dismiss message">
-                  ×
-                </button>
+                <button onClick={() => setNotice('')} aria-label="Dismiss message">×</button>
               </div>
             )}
 
@@ -394,7 +649,12 @@ function App() {
                   <div className="detail-panel">
                     <button
                       className="back-link"
-                      onClick={() => setSelectedEvent(null)}
+                      onClick={() => {
+                        setSelectedEvent(null)
+                        setSelectedSeatIds([])
+                        setActiveReservation(null)
+                        setError('')
+                      }}
                     >
                       ← Back to events
                     </button>
@@ -418,9 +678,7 @@ function App() {
                       </div>
                       <div>
                         <span>Location</span>
-                        <strong>
-                          {getVenue(selectedEvent.venue_id)?.city ?? '—'}
-                        </strong>
+                        <strong>{getVenue(selectedEvent.venue_id)?.city ?? '—'}</strong>
                       </div>
                       <div>
                         <span>Ticket price</span>
@@ -428,26 +686,129 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="booking-notice">
-                      <strong>Ready to book?</strong>
-                      <p>
-                        Seat selection and reservation checkout are the next
-                        integration step. No payment will be taken here.
-                      </p>
-                      {!user && (
-                        <button
-                          className="button button-primary"
-                          onClick={() => {
-                            setAuthMode('login')
-                            document.getElementById('auth-panel')?.scrollIntoView({
-                              behavior: 'smooth',
-                            })
-                          }}
-                        >
-                          Sign in to continue
-                        </button>
+                    <section className="seat-selection-section">
+                      <div className="section-heading seat-heading">
+                        <div>
+                          <span className="eyebrow">CHOOSE YOUR SPOTS</span>
+                          <h3>Select your seats</h3>
+                        </div>
+                        <span className="seat-capacity">
+                          {eventSeats.filter((seat) => seat.status === 'available').length} available
+                        </span>
+                      </div>
+
+                      {seatsLoading ? (
+                        <div className="empty-state">Loading seat availability...</div>
+                      ) : eventSeats.length === 0 ? (
+                        <div className="empty-state">
+                          <h3>No seat inventory found</h3>
+                          <p>This event may not have initialized seat inventory.</p>
+                          <button
+                            className="button button-outline"
+                            onClick={() => void loadEventSeats(selectedEvent.id)}
+                          >
+                            Retry
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          {renderSeatMap()}
+
+                          <div className="selection-summary">
+                            <div className="selection-summary-top">
+                              <div>
+                                <span className="eyebrow">YOUR SELECTION</span>
+                                <strong>
+                                  {selectedSeatIds.length} / {MAX_SELECTABLE_SEATS} seats
+                                </strong>
+                              </div>
+                              <strong className="selection-total">
+                                {formatPrice(totalAmount)}
+                              </strong>
+                            </div>
+
+                            {selectedSeats.length > 0 ? (
+                              <div className="selected-seat-list">
+                                {selectedSeats.map((seat) => (
+                                  <span key={seat.id}>
+                                    {seat.row_label}{seat.seat_number}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="selection-hint">
+                                Select available seats to continue.
+                              </p>
+                            )}
+
+                            <button
+                              className="button button-primary reserve-button"
+                              disabled={
+                                !user ||
+                                selectedSeatIds.length === 0 ||
+                                reservationLoading ||
+                                activeHoldActive
+                              }
+                              onClick={() => void handleReservation()}
+                            >
+                              {reservationLoading
+                                ? 'Reserving seats...'
+                                : !user
+                                  ? 'Sign in to reserve'
+                                  : activeHoldActive
+                                    ? 'Reservation already active'
+                                    : `Reserve ${selectedSeatIds.length || ''} seat${selectedSeatIds.length === 1 ? '' : 's'}`}
+                            </button>
+
+                            {!user && (
+                              <p className="selection-hint">
+                                Sign in to reserve your selected seats.
+                              </p>
+                            )}
+                          </div>
+                        </>
                       )}
-                    </div>
+                    </section>
+
+                    {activeReservation &&
+                      activeReservation.status === 'pending' &&
+                      !activeHoldExpired && (
+                        <section className="reservation-hold">
+                          <span className="eyebrow">RESERVATION CREATED</span>
+                          <div className="hold-heading">
+                            <h3>Seats are on hold</h3>
+                            <strong className="hold-countdown">
+                              {formatCountdown(remainingHoldTime)}
+                            </strong>
+                          </div>
+                          <p>
+                            Reservation #{activeReservation.id} · {activeReservation.seats.length} seats
+                          </p>
+                          <div className="booking-seats">
+                            {activeReservation.seats.map((seat) => (
+                              <span key={seat.event_seat_id}>
+                                {seat.row_label}{seat.seat_number}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="hold-footer">
+                            <strong>{formatPrice(activeReservation.total_amount)}</strong>
+                            <span>Payment integration is the next step.</span>
+                          </div>
+                        </section>
+                      )}
+
+                    {activeHoldExpired && (
+                      <div className="alert alert-error">
+                        <span>Your reservation hold has expired.</span>
+                        <button
+                          type="button"
+                          onClick={() => void refreshExpiredReservation()}
+                        >
+                          Refresh availability
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <>
@@ -456,9 +817,7 @@ function App() {
                         <span className="eyebrow">FIND YOUR NEXT EXPERIENCE</span>
                         <h2>Upcoming events</h2>
                       </div>
-                      <span className="result-count">
-                        {events.length} events
-                      </span>
+                      <span className="result-count">{events.length} events</span>
                     </div>
 
                     {loading ? (
@@ -482,9 +841,7 @@ function App() {
                               </div>
 
                               <div className="event-card-body">
-                                <span className="event-date">
-                                  {formatDate(item.starts_at)}
-                                </span>
+                                <span className="event-date">{formatDate(item.starts_at)}</span>
                                 <h3>{item.title}</h3>
                                 <p className="event-venue">
                                   {venue?.name ?? 'Venue'} · {venue?.city ?? 'Location'}
@@ -496,10 +853,7 @@ function App() {
                                   <strong>{formatPrice(item.price)}</strong>
                                   <button
                                     className="button button-outline button-small"
-                                    onClick={() => {
-                                      setSelectedEvent(item)
-                                      setError('')
-                                    }}
+                                    onClick={() => void openEvent(item)}
                                   >
                                     View details
                                   </button>
