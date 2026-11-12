@@ -1,5 +1,5 @@
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const API_BASE = '/api'
@@ -62,6 +62,94 @@ type Reservation = {
 type AuthResponse = {
   access_token: string
   token_type: string
+}
+
+type PaymentOrderResponse = {
+  payment_id: number
+  reservation_id: number
+  order_id: string
+  amount: number
+  currency: string
+  key_id: string
+}
+
+type PaymentVerificationResponse = {
+  payment_id: number
+  reservation_id: number
+  payment_status: string
+  reservation_status: string
+  message: string
+}
+
+type RazorpayCheckoutResponse = {
+  razorpay_order_id: string
+  razorpay_payment_id: string
+  razorpay_signature: string
+}
+
+type RazorpayFailureResponse = {
+  error?: {
+    code?: string
+    description?: string
+    reason?: string
+    source?: string
+    step?: string
+    metadata?: {
+      order_id?: string
+      payment_id?: string
+    }
+  }
+}
+
+type RazorpayOptions = {
+  key: string
+  amount: number
+  currency: string
+  name: string
+  description: string
+  order_id: string
+  prefill: { email: string }
+  theme: { color: string }
+  handler: (response: RazorpayCheckoutResponse) => void | Promise<void>
+  modal: { ondismiss: () => void }
+}
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayOptions) => {
+      open: () => void
+      on: (event: 'payment.failed', handler: (response: RazorpayFailureResponse) => void) => void
+    }
+  }
+}
+
+let razorpayScriptPromise: Promise<void> | null = null
+
+function loadRazorpayScript(): Promise<void> {
+  if (window.Razorpay) return Promise.resolve()
+  if (razorpayScriptPromise) return razorpayScriptPromise
+
+  razorpayScriptPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script')
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    script.async = true
+    script.onload = () => {
+      if (window.Razorpay) {
+        resolve()
+      } else {
+        razorpayScriptPromise = null
+        reject(new Error('Razorpay Checkout could not be initialized.'))
+      }
+    }
+    script.onerror = () => {
+      razorpayScriptPromise = null
+      script.remove()
+      reject(new Error('Could not load Razorpay Checkout. Check your internet connection.'))
+    }
+    document.body.appendChild(script)
+  })
+
+  return razorpayScriptPromise
 }
 
 type View = 'events' | 'bookings'
@@ -153,6 +241,10 @@ function App() {
   const [authLoading, setAuthLoading] = useState(false)
   const [seatsLoading, setSeatsLoading] = useState(false)
   const [reservationLoading, setReservationLoading] = useState(false)
+  const [paymentLoading, setPaymentLoading] = useState(false)
+  const [paymentStatus, setPaymentStatus] = useState('')
+  const [checkoutStarted, setCheckoutStarted] = useState(false)
+  const paymentInProgressRef = useRef(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -269,6 +361,7 @@ function App() {
   const activeHoldExpired =
     Boolean(activeReservation) &&
     activeReservation?.status === 'pending' &&
+    !checkoutStarted &&
     currentTime > 0 &&
     remainingHoldTime <= 0
 
@@ -286,6 +379,8 @@ function App() {
     setSelectedSeatIds([])
     setEventSeats([])
     setActiveReservation(null)
+    setPaymentStatus('')
+    setCheckoutStarted(false)
     setError('')
     setNotice('')
     setView('events')
@@ -387,6 +482,8 @@ function App() {
       )
 
       setActiveReservation(reservation)
+      setPaymentStatus('')
+      setCheckoutStarted(false)
       setSelectedSeatIds([])
       setNotice(
         'Seats reserved successfully. Complete checkout before the hold expires.',
@@ -407,6 +504,145 @@ function App() {
       await loadEventSeats(selectedEvent.id)
     } finally {
       setReservationLoading(false)
+    }
+  }
+
+  async function handlePayment() {
+    if (!token || !user) {
+      setError('Please sign in before continuing to payment.')
+      setAuthMode('login')
+      document.getElementById('auth-panel')?.scrollIntoView({ behavior: 'smooth' })
+      return
+    }
+
+    if (!activeReservation || activeReservation.status !== 'pending') {
+      setError('There is no pending reservation to pay for.')
+      return
+    }
+
+    if (paymentInProgressRef.current || paymentLoading) return
+
+    paymentInProgressRef.current = true
+    setPaymentLoading(true)
+    setPaymentStatus('Preparing secure checkout...')
+    setError('')
+    setNotice('')
+
+    const reservationId = activeReservation.id
+    const idempotencyStorageKey = `event_booking_payment_key_${reservationId}`
+
+    try {
+      // Load the provider SDK before creating an order, so a script failure
+      // does not leave an unnecessary payment attempt on the backend.
+      await loadRazorpayScript()
+
+      let idempotencyKey = sessionStorage.getItem(idempotencyStorageKey)
+      if (!idempotencyKey) {
+        idempotencyKey = crypto.randomUUID()
+        sessionStorage.setItem(idempotencyStorageKey, idempotencyKey)
+      }
+
+      const order = await api<PaymentOrderResponse>(
+        '/payments/orders',
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': idempotencyKey },
+          body: JSON.stringify({ reservation_id: reservationId }),
+        },
+        token,
+      )
+
+      if (!window.Razorpay) {
+        throw new Error('Razorpay Checkout is unavailable. Please try again.')
+      }
+
+      setCheckoutStarted(true)
+      setPaymentStatus('Checkout is ready. Complete payment in the Razorpay window.')
+
+      const checkout = new window.Razorpay({
+        key: order.key_id,
+        amount: order.amount,
+        currency: order.currency,
+        name: 'Evently',
+        description: `Reservation #${reservationId}`,
+        order_id: order.order_id,
+        prefill: { email: user.email },
+        theme: { color: '#6750a4' },
+        handler: async (response) => {
+          setPaymentLoading(true)
+          setPaymentStatus('Payment submitted. Verifying with the backend...')
+          setError('')
+
+          try {
+            const verification = await api<PaymentVerificationResponse>(
+              '/payments/verify',
+              {
+                method: 'POST',
+                body: JSON.stringify({
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_signature: response.razorpay_signature,
+                }),
+              },
+              token,
+            )
+
+            setPaymentStatus(verification.payment_status)
+            setNotice(verification.message)
+
+            if (verification.payment_status === 'failed') {
+              // A verified failed attempt is terminal for this idempotency key.
+              // The next explicit attempt must use a new key.
+              sessionStorage.removeItem(idempotencyStorageKey)
+            } else if (verification.payment_status === 'captured') {
+              // The webhook, not this browser callback, confirms the booking.
+              setPaymentStatus('captured')
+            }
+
+            await Promise.all([
+              loadBookings(token),
+              loadEventSeats(activeReservation.event_id),
+            ])
+          } catch (err) {
+            setError(
+              err instanceof Error
+                ? `${err.message} If payment may have succeeded, do not start a new payment. Refresh your bookings and check the payment status first.`
+                : 'Could not verify payment. Check your bookings before retrying.',
+            )
+            setPaymentStatus('verification_pending')
+          } finally {
+            setPaymentLoading(false)
+            paymentInProgressRef.current = false
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setPaymentStatus('checkout_dismissed')
+            setNotice('Checkout was closed. Your reservation remains on hold until its backend checkout deadline.')
+            setPaymentLoading(false)
+            paymentInProgressRef.current = false
+          },
+        },
+      })
+
+      checkout.on('payment.failed', (response) => {
+        const description = response.error?.description
+        setPaymentStatus('payment_failed')
+        setError(
+          description
+            ? `Payment failed: ${description}. Your reservation is still subject to its checkout deadline.`
+            : 'Payment failed. Your reservation is still subject to its checkout deadline.',
+        )
+        setPaymentLoading(false)
+        paymentInProgressRef.current = false
+      })
+
+      checkout.open()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not start checkout.')
+      setPaymentStatus('')
+      setPaymentLoading(false)
+      paymentInProgressRef.current = false
     }
   }
 
@@ -437,6 +673,8 @@ function App() {
 
       if (activeReservation?.id === reservationId) {
         setActiveReservation(null)
+        setPaymentStatus('')
+        setCheckoutStarted(false)
       }
 
       setNotice('Reservation cancelled successfully.')
@@ -777,13 +1015,22 @@ function App() {
                           <span className="eyebrow">RESERVATION CREATED</span>
                           <div className="hold-heading">
                             <h3>Seats are on hold</h3>
-                            <strong className="hold-countdown">
-                              {formatCountdown(remainingHoldTime)}
-                            </strong>
+                            {checkoutStarted ? (
+                              <strong className="hold-countdown">Checkout active</strong>
+                            ) : (
+                              <strong className="hold-countdown">
+                                {formatCountdown(remainingHoldTime)}
+                              </strong>
+                            )}
                           </div>
                           <p>
                             Reservation #{activeReservation.id} · {activeReservation.seats.length} seats
                           </p>
+                          {checkoutStarted && (
+                            <p className="selection-hint">
+                              The checkout deadline is enforced by the backend. The original hold countdown is no longer applicable.
+                            </p>
+                          )}
                           <div className="booking-seats">
                             {activeReservation.seats.map((seat) => (
                               <span key={seat.event_seat_id}>
@@ -793,8 +1040,40 @@ function App() {
                           </div>
                           <div className="hold-footer">
                             <strong>{formatPrice(activeReservation.total_amount)}</strong>
-                            <span>Payment integration is the next step.</span>
+                            <button
+                              type="button"
+                              className="button button-primary button-small"
+                              onClick={() => void handlePayment()}
+                              disabled={
+                                paymentLoading ||
+                                activeReservation.status !== 'pending' ||
+                                paymentStatus === 'captured' ||
+                                paymentStatus === 'authorized' ||
+                                paymentStatus === 'verification_pending'
+                              }
+                            >
+                              {paymentLoading
+                                ? 'Processing...'
+                                : paymentStatus === 'captured' || paymentStatus === 'authorized'
+                                  ? 'Payment submitted'
+                                  : 'Proceed to payment'}
+                            </button>
                           </div>
+                          {paymentStatus && (
+                            <p className="selection-hint" role="status">
+                              {paymentStatus === 'captured'
+                                ? 'Payment captured. Booking confirmation is pending the Razorpay webhook.'
+                                : paymentStatus === 'authorized'
+                                  ? 'Payment authorized. Waiting for capture and booking confirmation.'
+                                  : paymentStatus === 'verification_pending'
+                                    ? 'Payment verification is pending. Check My bookings before trying again.'
+                                    : paymentStatus === 'checkout_dismissed'
+                                      ? 'Checkout closed. You can reopen checkout while the reservation is still active.'
+                                      : paymentStatus === 'payment_failed'
+                                        ? 'Payment failed. You can try checkout again while the reservation remains active.'
+                                        : paymentStatus}
+                            </p>
+                          )}
                         </section>
                       )}
 
