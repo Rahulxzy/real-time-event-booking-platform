@@ -17,6 +17,27 @@ CHECKOUT_WINDOW_MINUTES = 10
 MAX_RESERVATION_HOLD_MINUTES = 15
 ACTIVE_PAYMENT_STATUSES = ("creating", "created", "authorized")
 
+RAZORPAY_PLACEHOLDER_MARKERS = (
+    "your_",
+    "placeholder",
+    "replace_me",
+    "changeme",
+)
+
+
+def _razorpay_credentials_configured() -> bool:
+    key_id = (settings.razorpay_key_id or "").strip().lower()
+    key_secret = (settings.razorpay_key_secret or "").strip().lower()
+
+    if not key_id or not key_secret:
+        return False
+
+    return not any(
+        marker in value
+        for value in (key_id, key_secret)
+        for marker in RAZORPAY_PLACEHOLDER_MARKERS
+    )
+
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -417,10 +438,10 @@ def create_payment_order(
             ),
         )
 
-    if not settings.razorpay_key_id or not settings.razorpay_key_secret:
+    if not _razorpay_credentials_configured():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Payment provider is not configured",
+            detail="Payment provider credentials are missing or contain placeholder values",
         )
 
     try:
