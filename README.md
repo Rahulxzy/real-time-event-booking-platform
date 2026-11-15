@@ -1,31 +1,43 @@
 # Real-Time Event Booking Platform
 
-A production-oriented event booking backend inspired by BookMyShow, built with FastAPI and PostgreSQL.
+A production-oriented event booking platform inspired by BookMyShow, built with FastAPI, PostgreSQL, React, and TypeScript.
 
-The project focuses on backend engineering fundamentals and production-style workflows, including authentication, event and seat management, reservation lifecycle, concurrency control, payment processing, background jobs, and automated testing.
+The project focuses on backend engineering and production-style workflows, including authentication, event and seat management, reservation lifecycle, concurrency control, payment processing, background jobs, and automated testing.
 
 ## Current Status
 
 **Implemented:**
-- Project foundation and database migrations
+
+- Backend REST APIs using FastAPI
+- React frontend with TypeScript and Vite
 - User authentication and authorization
 - Venue and event management
 - Venue seat management
 - Event-specific seat inventory
 - Reservation and seat-hold lifecycle
 - Concurrent booking protection
-- Razorpay payment integration and webhook processing
+- Razorpay payment order and verification integration
+- Razorpay webhook processing
 - Redis and Celery background processing
 - PostgreSQL integration testing with Testcontainers
+- Automated backend test suite
 
-**Current engineering focus:** Improving test architecture and verifying database migrations against disposable PostgreSQL instances.
+**Current engineering focus:**
+
+Preparing the application for deployment by introducing containerization, production configuration, CI/CD, and cloud infrastructure.
+
+**Deployment status:** Not deployed to production yet.
+
+**Payment testing status:** Payment integration is implemented. End-to-end Razorpay sandbox verification requires valid Razorpay test credentials.
 
 ## Tech Stack
 
 | Category | Technology |
 |---|---|
 | Language | Python 3.12 |
-| API Framework | FastAPI |
+| Backend Framework | FastAPI |
+| Frontend | React 19, TypeScript |
+| Frontend Build Tool | Vite |
 | Database | PostgreSQL |
 | ORM | SQLAlchemy 2.x |
 | Database Migrations | Alembic |
@@ -37,13 +49,15 @@ The project focuses on backend engineering fundamentals and production-style wor
 | Background Processing | Celery |
 | Message Broker | Redis |
 | Containerization | Docker and Docker Compose |
-| Testing | pytest |
+| Backend Testing | pytest |
 | PostgreSQL Integration Testing | Testcontainers |
-| Package Management | uv |
+| Python Package Management | uv |
+| JavaScript Package Management | npm |
 
 ## Implemented Features
 
 ### Authentication
+
 - User registration and login
 - Secure password hashing using Argon2
 - JWT-based authentication
@@ -51,6 +65,7 @@ The project focuses on backend engineering fundamentals and production-style wor
 - Authentication and authorization checks
 
 ### Venues and Events
+
 - Create, list, retrieve, update, and delete venues
 - Event CRUD operations
 - Associate events with venues
@@ -58,6 +73,7 @@ The project focuses on backend engineering fundamentals and production-style wor
 - Validate pricing and event capacity
 
 ### Venue Seat Management
+
 - Create seats within a venue
 - List, retrieve, update, and delete seats
 - Prevent duplicate seat positions within a venue
@@ -65,59 +81,79 @@ The project focuses on backend engineering fundamentals and production-style wor
 - Scope individual seat lookups to their venue
 
 ### Event Seat Inventory
+
 - Generate event-specific seat inventory from venue seats
 - Track individual seat availability for an event
 - Maintain separate inventory for different events
 
 ### Reservation System
+
 - Reserve one or multiple seats
 - Maintain reservation and reservation-seat records
 - Temporary seat holds with a five-minute initial reservation window
 - Checkout deadline management
 - Maximum reservation hold of 15 minutes from creation
 - Release seats when reservations expire or are cancelled
-- Prevent double booking using PostgreSQL transaction and locking mechanisms
+- Prevent double booking using PostgreSQL transactions and locking mechanisms
 - Reservation history and ownership checks
 
 ### Payment Integration
+
 - Razorpay payment order creation
 - Payment signature verification
 - Webhook signature verification
 - Durable webhook event processing
 - Idempotent handling of duplicate webhook events
-- Handle payment status updates and reservation confirmation
+- Payment status updates and reservation confirmation
 - Store payment amounts in integer paise
+- Validate payment amounts and provider order details
 
 Payment confirmation is driven by verified server-side payment processing, not solely by frontend success responses.
 
+**Note:** Valid Razorpay test credentials are required to perform an actual sandbox checkout. Do not commit payment credentials to Git.
+
 ### Background Processing
+
 - Redis as the Celery message broker
 - Celery worker for background task execution
 - Celery Beat for scheduled task execution
 - Periodic expiration of overdue reservations
 - Database session management inside background tasks
 
+### Frontend
+
+- React and TypeScript application
+- User authentication flow
+- Event browsing and selection
+- Event details
+- Seat selection interface
+- Reservation flow
+- Booking history
+- Razorpay Standard Checkout integration
+
 ## Architecture
 
 ```text
-                  Client / Frontend
-                         |
-                         v
-                  FastAPI Application
-                         |
-             +-----------+-----------+
-             |           |           |
-             v           v           v
-         PostgreSQL    Redis     Razorpay
-             ^           |
-             |           v
-             |      Celery Worker
-             |           ^
-             |           |
-             +------ Celery Beat
+                  React Frontend
+                        |
+                        v
+                  FastAPI Backend
+                        |
+           +------------+------------+
+           |            |            |
+           v            v            v
+       PostgreSQL     Redis       Razorpay
+           ^            |
+           |            v
+           |       Celery Worker
+           |            ^
+           |            |
+           +------ Celery Beat
 ```
 
 This is a simplified logical architecture. Redis is used as the Celery broker, while PostgreSQL stores application data.
+
+The frontend communicates with the backend through HTTP APIs.
 
 ## Project Setup
 
@@ -127,6 +163,7 @@ Install the following:
 
 - Python 3.12
 - [uv](https://docs.astral.sh/uv/)
+- Node.js and npm
 - PostgreSQL
 - Docker Desktop with Docker Compose
 - Git
@@ -141,7 +178,7 @@ git clone https://github.com/Rahulxzy/real-time-event-booking-platform.git
 cd real-time-event-booking-platform
 ```
 
-### 2. Install dependencies
+### 2. Install backend dependencies
 
 ```bash
 uv sync
@@ -168,8 +205,6 @@ Also configure the Redis and Razorpay settings required by the application.
 Use the exact setting names defined in the application's configuration. Never commit `.env` or real credentials to Git.
 
 ### 4. Create the PostgreSQL database
-
-Create the application database if it does not already exist:
 
 ```sql
 CREATE DATABASE event_booking_db;
@@ -207,8 +242,16 @@ PONG
 
 ### 7. Start the FastAPI application
 
+Open a terminal in the project root:
+
 ```bash
-uv run fastapi dev app/main.py
+uv run uvicorn app.main:app --reload
+```
+
+Backend API:
+
+```text
+http://127.0.0.1:8000
 ```
 
 ### 8. Start the Celery worker
@@ -231,7 +274,23 @@ uv run celery -A app.celery_app:celery_app beat --loglevel=INFO
 
 Celery Beat schedules periodic reservation-expiration tasks, which are executed by the worker.
 
-### 10. Explore the API
+### 10. Start the React frontend
+
+Open another terminal:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Vite will display the local frontend URL in the terminal, normally:
+
+```text
+http://localhost:5173
+```
+
+### 11. Explore the API
 
 Once the FastAPI server is running:
 
@@ -243,7 +302,7 @@ Use Swagger UI to inspect the current API routes, request schemas, response mode
 
 ## Running Tests
 
-Run the complete test suite:
+Run the complete backend test suite:
 
 ```bash
 uv run pytest -v
@@ -251,13 +310,15 @@ uv run pytest -v
 
 ### Testing Strategy
 
-The project uses two database testing approaches:
+The project uses two database testing approaches.
 
 **SQLite**
+
 - Used for fast tests that do not depend on PostgreSQL-specific behavior.
 - Suitable for general API and application logic tests.
 
 **PostgreSQL with Testcontainers**
+
 - Starts a disposable PostgreSQL container for integration tests.
 - Used for PostgreSQL-specific behavior, including transaction and concurrency testing.
 - Does not require a manually maintained local test database.
@@ -265,13 +326,13 @@ The project uses two database testing approaches:
 
 The Testcontainers PostgreSQL container is automatically managed during the pytest session.
 
-The latest verified test run:
+**Latest verified backend test result:**
 
 ```text
-164 passed, 16 warnings
+167 passed, 16 warnings
 ```
 
-This is a historical verification result; the test count may change as the project evolves.
+This is the latest verified test result as of November 15, 2026. Warnings are primarily deprecation warnings and are not test failures.
 
 ## Database Migrations
 
@@ -333,10 +394,17 @@ The following core routes are implemented:
 | GET | `/venues/{venue_id}/seats/{seat_id}` | Retrieve a seat |
 | PATCH | `/venues/{venue_id}/seats/{seat_id}` | Update a seat |
 | DELETE | `/venues/{venue_id}/seats/{seat_id}` | Delete a seat |
+| POST | `/events/{event_id}/inventory` | Initialize event inventory |
+| GET | `/events/{event_id}/seats` | List event seats |
+| POST | `/reservations` | Create a reservation |
+| GET | `/reservations/me` | List user reservations |
+| GET | `/reservations/{reservation_id}` | Retrieve a reservation |
+| POST | `/reservations/{reservation_id}/cancel` | Cancel a reservation |
+| POST | `/payments/orders` | Create a payment order |
+| POST | `/payments/verify` | Verify checkout payment |
+| POST | `/webhooks/razorpay` | Process Razorpay webhooks |
 
-Additional routes cover event inventory, reservations, payments, and webhooks. Refer to `/docs` for the complete and current route list.
-
-Authentication is required for protected operations.
+Authentication is required for protected operations. Refer to `/docs` for the complete and current API documentation.
 
 ## Useful Docker Commands
 
@@ -372,6 +440,8 @@ docker compose ps
 
 Avoid `docker compose down -v` unless you intentionally want to delete the associated persistent volumes.
 
+**Note:** The current Docker Compose setup is used for Redis and development/testing dependencies. Full application containerization is part of the upcoming deployment work.
+
 ## Engineering Practices
 
 The project follows these engineering practices:
@@ -388,18 +458,43 @@ The project follows these engineering practices:
 - Automated unit and integration testing
 - Git commits representing completed and tested milestones
 
-## Planned Improvements
+## Roadmap
 
-Potential future improvements include:
+The next engineering milestones are:
 
-- Alembic migration integration tests against Testcontainers
-- CI/CD pipeline with automated test execution
-- Improved application logging and monitoring
-- Rate limiting and caching
-- Real-time seat availability using WebSockets or Server-Sent Events
-- Ticket generation and email notifications
-- Cloud deployment and infrastructure automation
-- Production observability and operational tooling
+### Containerization
+
+- Dockerfile for the FastAPI backend
+- Dockerfile for the React frontend
+- Complete Docker Compose architecture
+- Container health checks
+- Persistent volumes and service networking
+- Production environment configuration
+
+### CI/CD
+
+- GitHub Actions workflows
+- Automated linting and testing
+- Docker image builds
+- Container registry integration
+- Automated deployment pipeline
+
+### Cloud Deployment
+
+- AWS infrastructure setup
+- Application deployment
+- Managed PostgreSQL
+- Redis deployment
+- Domain and HTTPS configuration
+- Reverse proxy and production networking
+
+### Observability and Reliability
+
+- Centralized application logging
+- Monitoring and health checks
+- Error tracking
+- Production security improvements
+- Backup and recovery strategy
 
 ## License
 
