@@ -2,31 +2,32 @@
 
 A production-oriented event booking platform inspired by BookMyShow, built with FastAPI, PostgreSQL, React, and TypeScript.
 
-The project focuses on backend engineering and production-style workflows, including authentication, event and seat management, reservation lifecycle, concurrency control, payment processing, background jobs, and automated testing.
+The project focuses on backend engineering and production-style workflows, including authentication, event and seat management, reservation lifecycle, concurrency control, payment processing, background jobs, automated testing, containerization, and CI/CD automation.
 
 ## Current Status
 
 **Implemented:**
 
-- Backend REST APIs using FastAPI
+- FastAPI backend REST APIs
 - React frontend with TypeScript and Vite
 - User authentication and authorization
 - Venue and event management
-- Venue seat management
-- Event-specific seat inventory
-- Reservation and seat-hold lifecycle
+- Venue seat management and event-specific inventory
+- Reservation lifecycle and temporary seat holds
 - Concurrent booking protection
 - Razorpay payment order and verification integration
 - Razorpay webhook processing
 - Redis and Celery background processing
 - PostgreSQL integration testing with Testcontainers
 - Automated backend test suite
+- Backend and frontend Dockerization
+- Multi-service Docker Compose infrastructure
+- GitHub Actions CI pipeline
+- Automated Docker image publishing to GitHub Container Registry (GHCR)
 
-**Current engineering focus:**
+**Current engineering focus:** Preparing for AWS cloud deployment, production security, and automated continuous deployment.
 
-Preparing the application for deployment by introducing containerization, production configuration, CI/CD, and cloud infrastructure.
-
-**Deployment status:** Not deployed to production yet.
+**Cloud deployment status:** Not deployed to AWS or another production cloud environment yet.
 
 **Payment testing status:** Payment integration is implemented. End-to-end Razorpay sandbox verification requires valid Razorpay test credentials.
 
@@ -38,7 +39,8 @@ Preparing the application for deployment by introducing containerization, produc
 | Backend Framework | FastAPI |
 | Frontend | React 19, TypeScript |
 | Frontend Build Tool | Vite |
-| Database | PostgreSQL |
+| Web Server | Nginx |
+| Database | PostgreSQL 18 |
 | ORM | SQLAlchemy 2.x |
 | Database Migrations | Alembic |
 | Validation | Pydantic |
@@ -49,6 +51,8 @@ Preparing the application for deployment by introducing containerization, produc
 | Background Processing | Celery |
 | Message Broker | Redis |
 | Containerization | Docker and Docker Compose |
+| CI/CD | GitHub Actions |
+| Container Registry | GitHub Container Registry (GHCR) |
 | Backend Testing | pytest |
 | PostgreSQL Integration Testing | Testcontainers |
 | Python Package Management | uv |
@@ -110,7 +114,7 @@ Preparing the application for deployment by introducing containerization, produc
 
 Payment confirmation is driven by verified server-side payment processing, not solely by frontend success responses.
 
-**Note:** Valid Razorpay test credentials are required to perform an actual sandbox checkout. Do not commit payment credentials to Git.
+**Note:** Valid Razorpay test credentials are required to perform an actual sandbox checkout. Never commit payment credentials to Git.
 
 ### Background Processing
 
@@ -134,41 +138,94 @@ Payment confirmation is driven by verified server-side payment processing, not s
 ## Architecture
 
 ```text
-                  React Frontend
-                        |
-                        v
-                  FastAPI Backend
-                        |
-           +------------+------------+
-           |            |            |
-           v            v            v
-       PostgreSQL     Redis       Razorpay
-           ^            |
-           |            v
-           |       Celery Worker
-           |            ^
-           |            |
-           +------ Celery Beat
+                    React Frontend
+                         |
+                         v
+                       Nginx
+                         |
+                         v
+                    FastAPI API
+                         |
+              +----------+----------+
+              |          |          |
+              v          v          v
+          PostgreSQL   Redis     Razorpay
+                         |
+                    Celery Worker
+                         ^
+                         |
+                    Celery Beat
 ```
 
-This is a simplified logical architecture. Redis is used as the Celery broker, while PostgreSQL stores application data.
+The application runs as separate Docker Compose services:
 
-The frontend communicates with the backend through HTTP APIs.
+- `frontend` — React production build served by Nginx
+- `api` — FastAPI application
+- `db` — PostgreSQL database
+- `redis` — Redis message broker
+- `worker` — Celery background task worker
+- `beat` — Celery scheduled task service
+- `migrate` — One-time Alembic database migration service
+
+## Repository Structure
+
+```text
+real-time-event-booking-platform/
+|
+|-- app/
+|   |-- main.py
+|   |-- database.py
+|   |-- models.py
+|   |-- schemas.py
+|   |-- routers/
+|   |-- services/
+|   |-- tasks/
+|   |-- celery_app.py
+|   |-- dependencies.py
+|
+|-- frontend/
+|   |-- src/
+|   |-- public/
+|   |-- Dockerfile
+|   |-- nginx.conf
+|   |-- package.json
+|
+|-- migrations/
+|   |-- versions/
+|
+|-- test/
+|   |-- conftest.py
+|   |-- test_*.py
+|
+|-- .github/
+|   |-- workflows/
+|       |-- ci.yml
+|
+|-- Dockerfile
+|-- .dockerignore
+|-- compose.yaml
+|-- pyproject.toml
+|-- uv.lock
+|-- alembic.ini
+|-- .env.example
+|-- .gitignore
+|-- README.md
+```
 
 ## Project Setup
 
 ### Prerequisites
 
-Install the following:
+For local development:
 
 - Python 3.12
-- [uv](https://docs.astral.sh/uv/)
+- uv
 - Node.js and npm
 - PostgreSQL
 - Docker Desktop with Docker Compose
 - Git
 
-Docker is required for Redis and the Testcontainers-based PostgreSQL integration tests.
+For containerized execution, Docker Desktop is sufficient for running the application services.
 
 ### 1. Clone the repository
 
@@ -178,19 +235,11 @@ git clone https://github.com/Rahulxzy/real-time-event-booking-platform.git
 cd real-time-event-booking-platform
 ```
 
-### 2. Install backend dependencies
-
-```bash
-uv sync
-```
-
-Use the Python version configured for the project. The development environment currently uses Python 3.12.13.
-
-### 3. Configure environment variables
+### 2. Configure environment variables
 
 Create a `.env` file in the project root.
 
-Configure the PostgreSQL connection using your local credentials:
+Configure the PostgreSQL connection and authentication settings:
 
 ```dotenv
 DATABASE_HOST=localhost
@@ -198,109 +247,169 @@ DATABASE_PORT=5432
 DATABASE_NAME=event_booking_db
 DATABASE_USER=postgres
 DATABASE_PASSWORD=your_local_database_password
+
+JWT_SECRET_KEY=replace_with_a_secure_random_secret
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+
+REDIS_URL=redis://localhost:6379/0
+
+RAZORPAY_KEY_ID=your_razorpay_key_id
+RAZORPAY_KEY_SECRET=your_razorpay_key_secret
+RAZORPAY_WEBHOOK_SECRET=your_razorpay_webhook_secret
+RAZORPAY_CURRENCY=INR
 ```
 
-Also configure the Redis and Razorpay settings required by the application.
+Use strong local secrets and valid provider credentials where required.
 
-Use the exact setting names defined in the application's configuration. Never commit `.env` or real credentials to Git.
+Never commit `.env` or real credentials to Git.
 
-### 4. Create the PostgreSQL database
+### 3. Local development setup
+
+Install backend dependencies:
+
+```bash
+uv sync
+```
+
+Create the PostgreSQL database:
 
 ```sql
 CREATE DATABASE event_booking_db;
 ```
 
-Run this using your PostgreSQL client.
-
-### 5. Apply database migrations
+Apply database migrations:
 
 ```bash
 uv run alembic upgrade head
 ```
 
-This applies all database migrations up to the latest revision.
-
-### 6. Start Redis
-
-Start Docker Desktop, then run:
+Start Redis:
 
 ```bash
 docker compose up -d redis
 ```
 
-Verify that Redis is responding:
-
-```bash
-docker compose exec redis redis-cli ping
-```
-
-Expected output:
-
-```text
-PONG
-```
-
-### 7. Start the FastAPI application
-
-Open a terminal in the project root:
+Start the FastAPI application:
 
 ```bash
 uv run uvicorn app.main:app --reload
 ```
 
-Backend API:
-
-```text
-http://127.0.0.1:8000
-```
-
-### 8. Start the Celery worker
-
-Open a separate terminal in the project directory:
+Start the Celery worker in a separate terminal:
 
 ```bash
 uv run celery -A app.celery_app:celery_app worker --loglevel=INFO --pool=solo
 ```
 
-The `solo` pool is used for local development on Windows.
-
-### 9. Start Celery Beat
-
-Open another terminal:
+Start Celery Beat in another terminal:
 
 ```bash
 uv run celery -A app.celery_app:celery_app beat --loglevel=INFO
 ```
 
-Celery Beat schedules periodic reservation-expiration tasks, which are executed by the worker.
-
-### 10. Start the React frontend
-
-Open another terminal:
+Start the React frontend:
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
 
-Vite will display the local frontend URL in the terminal, normally:
+Vite normally serves the frontend at:
 
 ```text
 http://localhost:5173
 ```
 
-### 11. Explore the API
+### 4. API Documentation
 
-Once the FastAPI server is running:
+Once the backend is running:
 
-- Interactive API documentation: http://127.0.0.1:8000/docs
-- Alternative API documentation: http://127.0.0.1:8000/redoc
+- API documentation: http://127.0.0.1:8000/docs
+- Alternative documentation: http://127.0.0.1:8000/redoc
 - Health check: http://127.0.0.1:8000/health
 
-Use Swagger UI to inspect the current API routes, request schemas, response models, and authentication requirements.
+## Running with Docker Compose
 
-## Running Tests
+The complete application can be run using Docker Compose.
+
+### Prerequisites
+
+- Docker Desktop
+- Docker Compose
+- Configured root `.env` file
+
+For containerized execution, the Compose configuration overrides the database and Redis hostnames with their internal service names.
+
+### Start the application
+
+Build and start all services:
+
+```bash
+docker compose up -d --build
+```
+
+This starts:
+
+- PostgreSQL
+- Redis
+- Database migration service
+- FastAPI
+- Celery worker
+- Celery Beat
+- React frontend served by Nginx
+
+### Application URLs
+
+| Service | URL |
+|---|---|
+| React Frontend | http://localhost:3000 |
+| FastAPI API | http://localhost:8000 |
+| Swagger Documentation | http://localhost:8000/docs |
+| Health Check | http://localhost:8000/health |
+
+### Useful Docker Compose commands
+
+Check service status:
+
+```bash
+docker compose ps
+```
+
+View application logs:
+
+```bash
+docker compose logs -f api
+```
+
+View worker logs:
+
+```bash
+docker compose logs -f worker
+```
+
+View frontend logs:
+
+```bash
+docker compose logs -f frontend
+```
+
+Stop services without deleting persistent volumes:
+
+```bash
+docker compose down
+```
+
+Restart services:
+
+```bash
+docker compose up -d
+```
+
+**Important:** PostgreSQL and Redis use named Docker volumes for persistent data. Avoid `docker compose down -v` unless you intentionally want to delete the associated database and Redis volumes.
+
+## Testing
 
 Run the complete backend test suite:
 
@@ -319,20 +428,97 @@ The project uses two database testing approaches.
 
 **PostgreSQL with Testcontainers**
 
-- Starts a disposable PostgreSQL container for integration tests.
-- Used for PostgreSQL-specific behavior, including transaction and concurrency testing.
+- Starts a disposable PostgreSQL 18 container for integration tests.
+- Used for PostgreSQL-specific behavior, including transactions and concurrency.
+- Tests database connection and migration upgrade/downgrade behavior.
 - Does not require a manually maintained local test database.
-- Requires Docker Desktop to be running.
+- Requires Docker to be running.
 
 The Testcontainers PostgreSQL container is automatically managed during the pytest session.
 
-**Latest verified backend test result:**
+## Continuous Integration
+
+GitHub Actions automatically validates changes pushed to the `main` branch and pull requests targeting `main`.
+
+The CI workflow is located at:
 
 ```text
-167 passed, 16 warnings
+.github/workflows/ci.yml
 ```
 
-This is the latest verified test result as of November 15, 2026. Warnings are primarily deprecation warnings and are not test failures.
+### CI Pipeline
+
+**1. Backend Tests**
+
+- Set up Python 3.12
+- Install dependencies using uv
+- Run the complete pytest suite
+- Execute PostgreSQL integration tests through Testcontainers
+
+**2. Frontend Lint and Build**
+
+- Set up Node.js 22
+- Install dependencies using `npm ci`
+- Run Oxlint
+- Build the production frontend using TypeScript and Vite
+
+**3. Docker Image Build**
+
+- Build the FastAPI backend Docker image
+- Build the React frontend Docker image
+
+**4. Publish Images to GHCR**
+
+- Authenticate using GitHub Actions `GITHUB_TOKEN`
+- Publish backend and frontend images to GitHub Container Registry
+- Publish only after successful CI jobs
+- Publish images on successful pushes to `main`, not on pull requests
+
+### Verified CI Results
+
+The CI pipeline has successfully completed all four jobs:
+
+- Backend Tests
+- Frontend Lint and Build
+- Docker Image Build
+- Publish Images to GHCR
+
+The workflow is configured to run automatically on relevant pushes and pull requests.
+
+## Docker Images — GitHub Container Registry
+
+The backend and frontend Docker images are published to GHCR.
+
+**Backend image:**
+
+```text
+ghcr.io/rahulxzy/real-time-event-booking-platform-backend
+```
+
+**Frontend image:**
+
+```text
+ghcr.io/rahulxzy/real-time-event-booking-platform-frontend
+```
+
+Both images use two tags:
+
+- `latest` — Latest successfully published image from the main branch
+- Git commit SHA — Immutable version identifier for a specific source revision
+
+Pull the backend image:
+
+```bash
+docker pull ghcr.io/rahulxzy/real-time-event-booking-platform-backend:latest
+```
+
+Pull the frontend image:
+
+```bash
+docker pull ghcr.io/rahulxzy/real-time-event-booking-platform-frontend:latest
+```
+
+These images are available through the project's GitHub Packages section.
 
 ## Database Migrations
 
@@ -391,9 +577,6 @@ The following core routes are implemented:
 | DELETE | `/events/{event_id}` | Delete an event |
 | POST | `/venues/{venue_id}/seats` | Create a seat |
 | GET | `/venues/{venue_id}/seats` | List venue seats |
-| GET | `/venues/{venue_id}/seats/{seat_id}` | Retrieve a seat |
-| PATCH | `/venues/{venue_id}/seats/{seat_id}` | Update a seat |
-| DELETE | `/venues/{venue_id}/seats/{seat_id}` | Delete a seat |
 | POST | `/events/{event_id}/inventory` | Initialize event inventory |
 | GET | `/events/{event_id}/seats` | List event seats |
 | POST | `/reservations` | Create a reservation |
@@ -404,43 +587,7 @@ The following core routes are implemented:
 | POST | `/payments/verify` | Verify checkout payment |
 | POST | `/webhooks/razorpay` | Process Razorpay webhooks |
 
-Authentication is required for protected operations. Refer to `/docs` for the complete and current API documentation.
-
-## Useful Docker Commands
-
-Start Redis:
-
-```bash
-docker compose up -d redis
-```
-
-Stop Redis without deleting its persistent data:
-
-```bash
-docker compose stop redis
-```
-
-Start an existing Redis container:
-
-```bash
-docker compose start redis
-```
-
-View Redis logs:
-
-```bash
-docker compose logs -f redis
-```
-
-Check running containers:
-
-```bash
-docker compose ps
-```
-
-Avoid `docker compose down -v` unless you intentionally want to delete the associated persistent volumes.
-
-**Note:** The current Docker Compose setup is used for Redis and development/testing dependencies. Full application containerization is part of the upcoming deployment work.
+Authentication is required for protected operations. Refer to `/docs` for complete API documentation.
 
 ## Engineering Practices
 
@@ -456,43 +603,36 @@ The project follows these engineering practices:
 - Background processing with Celery
 - Environment-based configuration and secret management
 - Automated unit and integration testing
+- Docker-based application packaging
+- Multi-service Docker Compose orchestration
+- Automated CI with GitHub Actions
+- Versioned Docker image publishing through GHCR
 - Git commits representing completed and tested milestones
 
 ## Roadmap
 
-The next engineering milestones are:
-
-### Containerization
-
-- Dockerfile for the FastAPI backend
-- Dockerfile for the React frontend
-- Complete Docker Compose architecture
-- Container health checks
-- Persistent volumes and service networking
-- Production environment configuration
-
-### CI/CD
-
-- GitHub Actions workflows
-- Automated linting and testing
-- Docker image builds
-- Container registry integration
-- Automated deployment pipeline
-
 ### Cloud Deployment
 
-- AWS infrastructure setup
-- Application deployment
-- Managed PostgreSQL
-- Redis deployment
+- AWS account and infrastructure setup
+- EC2-based application deployment
+- Production Docker Compose configuration
+- Production environment and secret management
 - Domain and HTTPS configuration
 - Reverse proxy and production networking
+- Persistent storage and database backups
+
+### Continuous Deployment
+
+- Automated deployment after successful CI
+- Pull and deploy versioned images from GHCR
+- Deployment health checks
+- Rollback strategy
 
 ### Observability and Reliability
 
 - Centralized application logging
 - Monitoring and health checks
-- Error tracking
+- Error tracking and alerts
 - Production security improvements
 - Backup and recovery strategy
 
